@@ -1,0 +1,111 @@
+service: cloudportfolio-identity
+frameworkVersion: '4'
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  environment:
+    TABLE_NAME: cloudportfolio-identity-${sls:stage}
+    REMINDER_TABLE_NAME: cloudportfolio-reminders-${sls:stage}
+    PROJECT_API_URL: ${env:PROJECT_API_URL, ''}
+    CORS_ORIGIN: ${env:CORS_ORIGIN, '*'}
+    TOPIC_ARN: ${env:DOMAIN_TOPIC_ARN, ''}
+    NOTIFICATION_MODE: ${env:NOTIFICATION_MODE, 'disabled'}
+  httpApi:
+    cors: true
+    authorizers:
+      cognito:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: https://cognito-idp.${aws:region}.amazonaws.com/${env:COGNITO_USER_POOL_ID}
+        audience:
+          - ${env:COGNITO_CLIENT_ID}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query]
+          Resource:
+            - !GetAtt RecordsTable.Arn
+            - !GetAtt RemindersTable.Arn
+            - !Sub '${RemindersTable.Arn}/index/DueIndex'
+        - Effect: Allow
+          Action: [sns:Publish]
+          Resource: ${env:DOMAIN_TOPIC_ARN, 'arn:aws:sns:us-east-1:000000000000:placeholder'}
+functions:
+  api:
+    handler: handler.api
+    timeout: 20
+    events:
+      - httpApi: {path: /users, method: GET, authorizer: cognito}
+      - httpApi: {path: /users, method: POST, authorizer: cognito}
+      - httpApi: {path: "/users/{id}", method: GET, authorizer: cognito}
+      - httpApi: {path: "/users/{id}", method: PATCH, authorizer: cognito}
+      - httpApi: {path: "/users/{id}", method: DELETE, authorizer: cognito}
+      - httpApi: {path: /tenants, method: GET, authorizer: cognito}
+      - httpApi: {path: /tenants, method: POST, authorizer: cognito}
+      - httpApi: {path: "/tenants/{id}", method: GET, authorizer: cognito}
+      - httpApi: {path: "/tenants/{id}", method: PATCH, authorizer: cognito}
+      - httpApi: {path: "/tenants/{id}", method: DELETE, authorizer: cognito}
+      - httpApi: {path: /memberships, method: GET, authorizer: cognito}
+      - httpApi: {path: /memberships, method: POST, authorizer: cognito}
+      - httpApi: {path: "/memberships/{id}", method: GET, authorizer: cognito}
+      - httpApi: {path: "/memberships/{id}", method: PATCH, authorizer: cognito}
+      - httpApi: {path: "/memberships/{id}", method: DELETE, authorizer: cognito}
+      - httpApi: {path: /notifications/preferences, method: GET, authorizer: cognito}
+      - httpApi: {path: /notifications/preferences, method: PUT, authorizer: cognito}
+      - httpApi: {path: /notifications/inbox, method: GET, authorizer: cognito}
+      - httpApi: {path: /notifications/verification-inbox, method: GET, authorizer: cognito}
+      - httpApi: {path: /notifications/whatsapp/verification, method: POST, authorizer: cognito}
+      - httpApi: {path: /notifications/whatsapp/confirm, method: POST, authorizer: cognito}
+      - httpApi: {path: /notifications/whatsapp/number, method: DELETE, authorizer: cognito}
+      - httpApi: {path: /intelligence/proposals, method: POST, authorizer: cognito}
+      - httpApi: {path: /intelligence/actions, method: GET, authorizer: cognito}
+      - httpApi: {path: "/intelligence/actions/{id}/confirm", method: POST, authorizer: cognito}
+      - httpApi: {path: /reminders, method: GET, authorizer: cognito}
+      - httpApi: {path: "/reminders/{id}", method: PATCH, authorizer: cognito}
+      - httpApi: {path: "/reminders/{id}", method: DELETE, authorizer: cognito}
+  reminderScheduler:
+    handler: handler.scheduled
+    timeout: 30
+    events:
+      - schedule: rate(1 minute)
+resources:
+  Resources:
+    RecordsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: cloudportfolio-identity-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - {AttributeName: pk, AttributeType: S}
+          - {AttributeName: sk, AttributeType: S}
+        KeySchema:
+          - {AttributeName: pk, KeyType: HASH}
+          - {AttributeName: sk, KeyType: RANGE}
+        PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+    RemindersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: cloudportfolio-reminders-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - {AttributeName: pk, AttributeType: S}
+          - {AttributeName: sk, AttributeType: S}
+          - {AttributeName: gsi1pk, AttributeType: S}
+          - {AttributeName: gsi1sk, AttributeType: S}
+        KeySchema:
+          - {AttributeName: pk, KeyType: HASH}
+          - {AttributeName: sk, KeyType: RANGE}
+        GlobalSecondaryIndexes:
+          - IndexName: DueIndex
+            KeySchema:
+              - {AttributeName: gsi1pk, KeyType: HASH}
+              - {AttributeName: gsi1sk, KeyType: RANGE}
+            Projection: {ProjectionType: ALL}
+  Outputs:
+    RemindersTableName:
+      Value: !Ref RemindersTable
+    RemindersTableArn:
+      Value: !GetAtt RemindersTable.Arn

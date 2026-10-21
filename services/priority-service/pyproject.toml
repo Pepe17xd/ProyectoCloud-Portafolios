@@ -1,0 +1,9 @@
+[project]
+name = "cloudportfolio-priority-service"
+version = "1.0.0"
+requires-python = ">=3.11"
+[tool.pytest.ini_options]
+pythonpath = ["."]
+[tool.ruff]
+line-length = 120
+lint.ignore = ["B008", "BLE001"]

@@ -1,0 +1,36 @@
+{
+  "name": "cloudportfolio",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "shared",
+    "frontend",
+    "services/*-service"
+  ],
+  "scripts": {
+    "install:all": "npm install",
+    "test": "node --test tests/*.test.mjs",
+    "test:all": "node --test tests/*.test.mjs",
+    "test:e2e": "playwright test",
+    "dev:local": "node scripts/dev-local.mjs",
+    "seed:demo": "node scripts/seed-local.mjs demo",
+    "seed:full": "node scripts/seed-large-aws.mjs",
+    "local:down": "docker compose -f infrastructure/docker-compose.yml down",
+    "seed": "node scripts/seed-local.mjs demo"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@faker-js/faker": "^10.6.0",
+    "@playwright/test": "^1.64.1"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.800.0",
+    "@aws-sdk/client-s3": "^3.800.0",
+    "@aws-sdk/client-sns": "^3.800.0",
+    "@aws-sdk/client-sqs": "^3.800.0",
+    "@aws-sdk/lib-dynamodb": "^3.800.0",
+    "@aws-sdk/s3-request-presigner": "^3.800.0"
+  }
+}

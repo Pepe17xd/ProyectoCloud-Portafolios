@@ -1,0 +1,29 @@
+service: cloudportfolio-storage
+frameworkVersion: '4'
+provider:
+  name: aws
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+resources:
+  Resources:
+    DocumentsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: cloudportfolio-docs-${aws:accountId}-${sls:stage}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        CorsConfiguration:
+          CorsRules:
+            - AllowedOrigins: ["${env:CORS_ORIGIN, 'http://localhost:5173'}"]
+              AllowedMethods: [GET, PUT, HEAD]
+              AllowedHeaders: ['*']
+              ExposedHeaders: [ETag]
+              MaxAge: 3000
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+  Outputs:
+    BucketName: {Value: !Ref DocumentsBucket}

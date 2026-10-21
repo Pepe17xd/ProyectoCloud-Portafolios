@@ -1,0 +1,81 @@
+service: cloudportfolio-project
+frameworkVersion: '4'
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  environment:
+    TABLE_NAME: cloudportfolio-project-${sls:stage}
+    CORS_ORIGIN: ${env:CORS_ORIGIN, '*'}
+    TOPIC_ARN: ${env:DOMAIN_TOPIC_ARN, ''}
+    DOCUMENTS_BUCKET: ${env:DOCUMENTS_BUCKET}
+    PORTFOLIO_API_URL: ${env:PORTFOLIO_API_URL, ''}
+    IDENTITY_API_URL: ${env:IDENTITY_API_URL, ''}
+    PROJECT_API_URL: ${env:PROJECT_API_URL, ''}
+    BUDGET_API_URL: ${env:BUDGET_API_URL, ''}
+    RESOURCE_API_URL: ${env:RESOURCE_API_URL, ''}
+    PRIORITY_API_URL: ${env:PRIORITY_API_URL, ''}
+  httpApi:
+    cors: true
+    authorizers:
+      cognito:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: https://cognito-idp.${aws:region}.amazonaws.com/${env:COGNITO_USER_POOL_ID}
+        audience:
+          - ${env:COGNITO_CLIENT_ID}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query]
+          Resource:
+            - !GetAtt RecordsTable.Arn
+        - Effect: Allow
+          Action: [sns:Publish]
+          Resource: ${env:DOMAIN_TOPIC_ARN, 'arn:aws:sns:us-east-1:000000000000:placeholder'}
+        - Effect: Allow
+          Action: [s3:PutObject, s3:GetObject]
+          Resource: arn:aws:s3:::${env:DOCUMENTS_BUCKET}/*
+functions:
+  api:
+    handler: handler.api
+    timeout: 20
+    events:
+      - httpApi: {path: /projects, method: GET, authorizer: cognito}
+      - httpApi: {path: /projects, method: POST, authorizer: cognito}
+      - httpApi: {path: "/projects/{id}", method: GET, authorizer: cognito}
+      - httpApi: {path: "/projects/{id}", method: PATCH, authorizer: cognito}
+      - httpApi: {path: "/projects/{id}", method: DELETE, authorizer: cognito}
+      - httpApi: {path: "/projects/{id}/tasks", method: GET, authorizer: cognito}
+      - httpApi: {path: "/projects/{id}/tasks", method: POST, authorizer: cognito}
+      - httpApi: {path: "/projects/{id}/tasks/{taskId}", method: GET, authorizer: cognito}
+      - httpApi: {path: "/projects/{id}/tasks/{taskId}", method: PATCH, authorizer: cognito}
+      - httpApi: {path: "/projects/{id}/tasks/{taskId}", method: DELETE, authorizer: cognito}
+      - httpApi: {path: "/projects/{id}/milestones", method: GET, authorizer: cognito}
+      - httpApi: {path: "/projects/{id}/milestones", method: POST, authorizer: cognito}
+      - httpApi: {path: "/projects/{id}/milestones/{milestoneId}", method: GET, authorizer: cognito}
+      - httpApi: {path: "/projects/{id}/milestones/{milestoneId}", method: PATCH, authorizer: cognito}
+      - httpApi: {path: "/projects/{id}/milestones/{milestoneId}", method: DELETE, authorizer: cognito}
+      - httpApi: {path: /intelligence/ask, method: POST, authorizer: cognito}
+      - httpApi: {path: /intelligence/reports, method: POST, authorizer: cognito}
+      - httpApi: {path: /intelligence/reports, method: GET, authorizer: cognito}
+      - httpApi: {path: "/intelligence/reports/{id}", method: GET, authorizer: cognito}
+      - httpApi: {path: /documents, method: GET, authorizer: cognito}
+      - httpApi: {path: /documents, method: POST, authorizer: cognito}
+      - httpApi: {path: "/documents/{id}", method: GET, authorizer: cognito}
+resources:
+  Resources:
+    RecordsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: cloudportfolio-project-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - {AttributeName: pk, AttributeType: S}
+          - {AttributeName: sk, AttributeType: S}
+        KeySchema:
+          - {AttributeName: pk, KeyType: HASH}
+          - {AttributeName: sk, KeyType: RANGE}
+        PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}

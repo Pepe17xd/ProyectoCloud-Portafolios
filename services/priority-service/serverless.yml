@@ -1,0 +1,54 @@
+service: cloudportfolio-priority
+frameworkVersion: '4'
+plugins:
+  - serverless-python-requirements
+provider:
+  name: aws
+  runtime: python3.12
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  environment:
+    TABLE_NAME: cloudportfolio-priority-${sls:stage}
+    DOMAIN_TOPIC_ARN: ${env:DOMAIN_TOPIC_ARN, ''}
+    JWT_ISSUER: https://cognito-idp.${aws:region}.amazonaws.com/${env:COGNITO_USER_POOL_ID, 'local'}
+    COGNITO_CLIENT_ID: ${env:COGNITO_CLIENT_ID, 'local'}
+    PROJECT_API_URL: ${env:PROJECT_API_URL, ''}
+  httpApi:
+    cors: true
+    authorizers:
+      cognito:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: https://cognito-idp.${aws:region}.amazonaws.com/${env:COGNITO_USER_POOL_ID, 'local'}
+        audience: ["${env:COGNITO_CLIENT_ID, 'local'}"]
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:DeleteItem, dynamodb:Query]
+          Resource: !GetAtt RecordsTable.Arn
+        - Effect: Allow
+          Action: [sns:Publish]
+          Resource: ${env:DOMAIN_TOPIC_ARN, 'arn:aws:sns:us-east-1:000000000000:placeholder'}
+functions:
+  api:
+    handler: app.handler
+    timeout: 20
+    events:
+      - httpApi: {path: /health, method: GET}
+      - httpApi: {path: /priorities, method: GET, authorizer: cognito}
+      - httpApi: {path: /priorities, method: POST, authorizer: cognito}
+      - httpApi: {path: /priorities/recalculate, method: POST, authorizer: cognito}
+      - httpApi: {path: "/priorities/{ident}", method: GET, authorizer: cognito}
+      - httpApi: {path: "/priorities/{ident}", method: PATCH, authorizer: cognito}
+      - httpApi: {path: "/priorities/{ident}", method: DELETE, authorizer: cognito}
+      - httpApi: {path: /rankings, method: GET, authorizer: cognito}
+resources:
+  Resources:
+    RecordsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: cloudportfolio-priority-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions: [{AttributeName: pk, AttributeType: S}, {AttributeName: sk, AttributeType: S}]
+        KeySchema: [{AttributeName: pk, KeyType: HASH}, {AttributeName: sk, KeyType: RANGE}]

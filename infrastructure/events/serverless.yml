@@ -1,0 +1,48 @@
+service: cloudportfolio-events
+frameworkVersion: '4'
+provider:
+  name: aws
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+resources:
+  Resources:
+    DomainTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: cloudportfolio-domain-${sls:stage}
+    DomainDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: cloudportfolio-budget-dlq-${sls:stage}
+    BudgetQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: cloudportfolio-budget-${sls:stage}
+        VisibilityTimeout: 120
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt DomainDLQ.Arn
+          maxReceiveCount: 4
+    BudgetQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues: [!Ref BudgetQueue]
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal: {Service: sns.amazonaws.com}
+              Action: sqs:SendMessage
+              Resource: !GetAtt BudgetQueue.Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !Ref DomainTopic
+    BudgetSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        Protocol: sqs
+        TopicArn: !Ref DomainTopic
+        Endpoint: !GetAtt BudgetQueue.Arn
+        FilterPolicy: {eventType: [ProjectCreated]}
+  Outputs:
+    DomainTopicArn: {Value: !Ref DomainTopic}
+    BudgetQueueArn: {Value: !GetAtt BudgetQueue.Arn}

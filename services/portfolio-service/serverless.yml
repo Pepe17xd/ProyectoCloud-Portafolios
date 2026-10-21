@@ -1,0 +1,60 @@
+service: cloudportfolio-portfolio
+frameworkVersion: '4'
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  environment:
+    TABLE_NAME: cloudportfolio-portfolio-${sls:stage}
+    CORS_ORIGIN: ${env:CORS_ORIGIN, '*'}
+    TOPIC_ARN: ${env:DOMAIN_TOPIC_ARN, ''}
+    IDENTITY_API_URL: ${env:IDENTITY_API_URL, ''}
+  httpApi:
+    cors: true
+    authorizers:
+      cognito:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: https://cognito-idp.${aws:region}.amazonaws.com/${env:COGNITO_USER_POOL_ID}
+        audience:
+          - ${env:COGNITO_CLIENT_ID}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query]
+          Resource:
+            - !GetAtt RecordsTable.Arn
+        - Effect: Allow
+          Action: [sns:Publish]
+          Resource: ${env:DOMAIN_TOPIC_ARN, 'arn:aws:sns:us-east-1:000000000000:placeholder'}
+functions:
+  api:
+    handler: handler.api
+    timeout: 20
+    events:
+      - httpApi: {path: /portfolios, method: GET, authorizer: cognito}
+      - httpApi: {path: /portfolios, method: POST, authorizer: cognito}
+      - httpApi: {path: "/portfolios/{id}", method: GET, authorizer: cognito}
+      - httpApi: {path: "/portfolios/{id}", method: PATCH, authorizer: cognito}
+      - httpApi: {path: "/portfolios/{id}", method: DELETE, authorizer: cognito}
+      - httpApi: {path: "/portfolios/{id}/objectives", method: GET, authorizer: cognito}
+      - httpApi: {path: "/portfolios/{id}/objectives", method: POST, authorizer: cognito}
+      - httpApi: {path: "/portfolios/{id}/objectives/{objectiveId}", method: GET, authorizer: cognito}
+      - httpApi: {path: "/portfolios/{id}/objectives/{objectiveId}", method: PATCH, authorizer: cognito}
+      - httpApi: {path: "/portfolios/{id}/objectives/{objectiveId}", method: DELETE, authorizer: cognito}
+resources:
+  Resources:
+    RecordsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: cloudportfolio-portfolio-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - {AttributeName: pk, AttributeType: S}
+          - {AttributeName: sk, AttributeType: S}
+        KeySchema:
+          - {AttributeName: pk, KeyType: HASH}
+          - {AttributeName: sk, KeyType: RANGE}
+        PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}

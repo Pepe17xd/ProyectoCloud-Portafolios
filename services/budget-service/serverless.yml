@@ -1,0 +1,60 @@
+service: cloudportfolio-budget
+frameworkVersion: '4'
+plugins:
+  - serverless-python-requirements
+provider:
+  name: aws
+  runtime: python3.12
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  environment:
+    TABLE_NAME: cloudportfolio-budget-${sls:stage}
+    DOMAIN_TOPIC_ARN: ${env:DOMAIN_TOPIC_ARN, ''}
+    JWT_ISSUER: https://cognito-idp.${aws:region}.amazonaws.com/${env:COGNITO_USER_POOL_ID, 'local'}
+    COGNITO_CLIENT_ID: ${env:COGNITO_CLIENT_ID, 'local'}
+    PROJECT_API_URL: ${env:PROJECT_API_URL, ''}
+  httpApi:
+    cors: true
+    authorizers:
+      cognito:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: https://cognito-idp.${aws:region}.amazonaws.com/${env:COGNITO_USER_POOL_ID, 'local'}
+        audience: ["${env:COGNITO_CLIENT_ID, 'local'}"]
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query, dynamodb:TransactWriteItems]
+          Resource: !GetAtt RecordsTable.Arn
+        - Effect: Allow
+          Action: [sns:Publish]
+          Resource: ${env:DOMAIN_TOPIC_ARN, 'arn:aws:sns:us-east-1:000000000000:placeholder'}
+functions:
+  api:
+    handler: app.handler
+    timeout: 20
+    events:
+      - httpApi: {path: /health, method: GET}
+      - httpApi: {path: /budgets, method: GET, authorizer: cognito}
+      - httpApi: {path: /budgets, method: POST, authorizer: cognito}
+      - httpApi: {path: "/budgets/{ident}", method: GET, authorizer: cognito}
+      - httpApi: {path: "/budgets/{ident}", method: PATCH, authorizer: cognito}
+      - httpApi: {path: "/budgets/{ident}", method: DELETE, authorizer: cognito}
+      - httpApi: {path: "/budgets/{ident}/summary", method: GET, authorizer: cognito}
+      - httpApi: {path: /expenses, method: GET, authorizer: cognito}
+      - httpApi: {path: /expenses, method: POST, authorizer: cognito}
+  consume:
+    handler: app.consume
+    timeout: 30
+    events:
+      - sqs: {arn: "${env:BUDGET_QUEUE_ARN, 'arn:aws:sqs:us-east-1:000000000000:placeholder'}", batchSize: 5, functionResponseType: ReportBatchItemFailures}
+resources:
+  Resources:
+    RecordsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: cloudportfolio-budget-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions: [{AttributeName: pk, AttributeType: S}, {AttributeName: sk, AttributeType: S}]
+        KeySchema: [{AttributeName: pk, KeyType: HASH}, {AttributeName: sk, KeyType: RANGE}]
