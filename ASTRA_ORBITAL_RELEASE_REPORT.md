@@ -43,9 +43,9 @@ Nueve archivos `serverless.yml` y `amplify.yml` se analizaron sintácticamente c
 
 ## Git y publicación
 
-Estado al crear este reporte: remoto `origin` configurado como `https://github.com/Pepe17xd/ProyectoCloud-Portafolios.git`; rama local inicial `master` sin commits; `git ls-remote --heads origin` no mostró ramas, así que el remoto estaba vacío. Se detectaron 94 archivos no ignorados para revisión. Solo existen `frontend/.env.example` y `frontend/.env.local.example`, ambos plantillas sin secretos; `.env`, `.aws`, bases de datos, cachés, `node_modules`, `dist`, reportes de seed y artefactos de prueba están ignorados.
+El remoto `origin` es `https://github.com/Pepe17xd/ProyectoCloud-Portafolios.git`. El remoto estaba vacío al iniciar. Se revisaron 95 archivos staged; solo se incluyeron `frontend/.env.example` y `frontend/.env.local.example`, plantillas sin secretos. Se excluyeron `.env` reales, `.aws`, bases de datos, cachés, `node_modules`, `dist`, reportes de seed y artefactos Playwright. No se detectaron claves o tokens reales; los patrones que coincidieron eran valores locales ficticios requeridos por emuladores.
 
-**La publicación todavía no está verificada.** Este reporte debe actualizarse tras staging explícito, revisión del índice, commit, push normal sin force y consulta de `git ls-remote` para confirmar SHA/rama. No declarar este checkout publicado hasta completar esas operaciones.
+La publicación inicial se realizó con push normal, sin force. Rama `main`, commit de release `9f05363f97dd970f451d779e197cdddda19a86b1`. La consulta `git ls-remote --heads origin main` devolvió ese mismo SHA y `git status` quedó sincronizado con `origin/main`. Este reporte se actualizará en un commit documental posterior para conservar la evidencia en el repositorio.
 
 ## Límites y próximos pasos
 
