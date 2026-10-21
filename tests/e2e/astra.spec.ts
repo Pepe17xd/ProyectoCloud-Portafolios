@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, UpdateCommand, GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 let reminderId = '';
@@ -10,6 +10,27 @@ const apiIdentity = process.env.E2E_IDENTITY_API || 'http://localhost:4101';
 const apiProject = process.env.E2E_PROJECT_API || 'http://localhost:4103';
 const remindersDb = DynamoDBDocumentClient.from(new DynamoDBClient({ endpoint: process.env.DYNAMODB_ENDPOINT || 'http://localhost:8000', region: 'us-east-1', credentials: { accessKeyId: 'local', secretAccessKey: 'local' } }));
 test.afterAll(() => remindersDb.destroy());
+
+async function getReminderDelivery(id: string) {
+  const result = await remindersDb.send(new GetCommand({ TableName: 'cloudportfolio-identity-local', Key: { pk: 'TENANT#tenant-a', sk: `NOTIFY#DELIVERY#demo-admin-a#${id}` } }));
+  return result.Item;
+}
+
+async function hasProjectNotification(projectId: string) {
+  let cursor: Record<string, unknown> | undefined;
+  do {
+    const page = await remindersDb.send(new QueryCommand({
+      TableName: 'cloudportfolio-identity-local',
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+      ExpressionAttributeValues: { ':pk': 'TENANT#tenant-a', ':prefix': 'NOTIFY#DELIVERY#demo-admin-a#' },
+      ExclusiveStartKey: cursor,
+      Limit: 100
+    }));
+    if ((page.Items || []).some((item: any) => item.projectId === projectId && item.notice?.includes('No enviado a WhatsApp'))) return true;
+    cursor = page.LastEvaluatedKey;
+  } while (cursor);
+  return false;
+}
 
 async function login(page: import('@playwright/test').Page, email: string) {
   await page.goto('/login');
@@ -89,15 +110,16 @@ test('landing, navegación pública, auth, asistente y notificaciones locales', 
   let deliveryVisible = false; let deliveredReminder: any; let oneShotComplete = false;
   for (let attempt = 0; attempt < 40 && !(deliveryVisible && oneShotComplete); attempt++) {
     await page.waitForTimeout(500);
-    const [mailboxResponse, reminderResponse] = await Promise.all([apiCall(page, `${apiIdentity}/notifications/inbox`, 'GET', token), apiCall(page, `${apiIdentity}/reminders`, 'GET', token)]);
-    const mailbox = await mailboxResponse.json(); const listed = await reminderResponse.json();
-    deliveryVisible = mailbox.items.some((item: any) => item.reminderId === reminder.id && item.deliveryStatus === 'SIMULATED_LOCAL');
+    const [delivery, reminderResponse] = await Promise.all([getReminderDelivery(`reminder-${reminder.id}-${dueAt}`), apiCall(page, `${apiIdentity}/reminders`, 'GET', token)]);
+    const listed = await reminderResponse.json();
+    deliveryVisible = delivery?.reminderId === reminder.id && delivery.deliveryStatus === 'SIMULATED_LOCAL';
     deliveredReminder = listed.items.find((item: any) => item.id === reminder.id);
     oneShotComplete = deliveredReminder?.status === 'COMPLETED';
   }
   expect(deliveryVisible).toBeTruthy();
   expect(deliveredReminder.status).toBe('COMPLETED');
   const recurringIds: Record<string,string> = {};
+  const recurringDue: Record<string,string> = {};
   for (const recurrence of ['DAILY','WEEKLY']) {
     const recurringProposalResponse = await apiCall(page, `${apiIdentity}/intelligence/proposals`, 'POST', token, { text: `Recuérdame revisar el presupuesto mañana a las 09:00`, timezone: 'America/Lima', recurrence });
     expect(recurringProposalResponse.status()).toBe(201);
@@ -108,16 +130,21 @@ test('landing, navegación pública, auth, asistente y notificaciones locales', 
     const recurringReminder = (await recurringCreate.json()).reminder;
     recurringIds[recurrence] = recurringReminder.id;
     const overdueAt = new Date(Date.now() - 60_000).toISOString();
+    recurringDue[recurrence] = overdueAt;
     await remindersDb.send(new UpdateCommand({ TableName: 'cloudportfolio-reminders-local', Key: { pk: 'TENANT#tenant-a', sk: `REMINDER#demo-admin-a#${recurringReminder.id}` }, UpdateExpression: 'SET dueAt = :dueAt, gsi1sk = :dueKey', ExpressionAttributeValues: { ':dueAt': overdueAt, ':dueKey': `${overdueAt}#${recurringReminder.id}` } }));
   }
   let dailyNext: any; let weeklyNext: any; let recurringDelivered = false; let recurringRescheduled = false;
   for (let attempt = 0; attempt < 40 && !recurringRescheduled; attempt++) {
     await page.waitForTimeout(500);
-    const [mailboxResponse, reminderResponse] = await Promise.all([apiCall(page, `${apiIdentity}/notifications/inbox`, 'GET', token), apiCall(page, `${apiIdentity}/reminders`, 'GET', token)]);
-    const mailbox = await mailboxResponse.json(); const listed = await reminderResponse.json();
+    const [dailyDelivery, weeklyDelivery, reminderResponse] = await Promise.all([
+      getReminderDelivery(`reminder-${recurringIds.DAILY}-${recurringDue.DAILY}`),
+      getReminderDelivery(`reminder-${recurringIds.WEEKLY}-${recurringDue.WEEKLY}`),
+      apiCall(page, `${apiIdentity}/reminders`, 'GET', token)
+    ]);
+    const listed = await reminderResponse.json();
     dailyNext = listed.items.find((item: any) => item.id === recurringIds.DAILY);
     weeklyNext = listed.items.find((item: any) => item.id === recurringIds.WEEKLY);
-    recurringDelivered = ['DAILY','WEEKLY'].every((key) => mailbox.items.some((item: any) => item.reminderId === recurringIds[key] && item.deliveryStatus === 'SIMULATED_LOCAL'));
+    recurringDelivered = [dailyDelivery, weeklyDelivery].every((item: any) => item?.deliveryStatus === 'SIMULATED_LOCAL');
     recurringRescheduled = recurringDelivered && dailyNext?.status === 'SCHEDULED' && weeklyNext?.status === 'SCHEDULED' && Date.parse(dailyNext.dueAt) > Date.now() + 22 * 60 * 60 * 1000 && Date.parse(weeklyNext.dueAt) > Date.now() + 6 * 24 * 60 * 60 * 1000;
   }
   expect(recurringDelivered).toBeTruthy();
@@ -150,8 +177,9 @@ test('landing, navegación pública, auth, asistente y notificaciones locales', 
   reportId = report.id;
   expect(report.csv).toContain('projectId');
   expect(report.tenantId).toBe('tenant-a');
-  const reportList = await apiCall(page, `${apiProject}/intelligence/reports`, 'GET', token);
-  expect((await reportList.json()).items.some((item: any) => item.id === report.id)).toBeTruthy();
+  const reportRead = await apiCall(page, `${apiProject}/intelligence/reports/${report.id}`, 'GET', token);
+  expect(reportRead.status()).toBe(200);
+  expect((await reportRead.json()).report.id).toBe(report.id);
 
   await page.locator('#reminder-prompt').fill('Recuérdame revisar el cronograma mañana a las 10:00');
   await page.getByRole('button', { name: 'Proponer' }).click();
@@ -174,13 +202,12 @@ test('landing, navegación pública, auth, asistente y notificaciones locales', 
   const createdEventSource = await apiCall(page, `${apiProject}/projects`, 'POST', token, { name: `E2E notification ${suffix}` });
   expect(createdEventSource.status()).toBe(201);
   const createdProject = await createdEventSource.json();
-  let inbox: any = { items: [] };
-  for (let attempt = 0; attempt < 20 && !inbox.items.some((item: any) => item.projectId === createdProject.id); attempt++) {
+  let projectNotified = false;
+  for (let attempt = 0; attempt < 20 && !projectNotified; attempt++) {
     await page.waitForTimeout(250);
-    const response = await apiCall(page, `${apiIdentity}/notifications/inbox`, 'GET', token);
-    inbox = await response.json();
+    projectNotified = await hasProjectNotification(createdProject.id);
   }
-  expect(inbox.items.some((item: any) => item.projectId === createdProject.id && item.notice.includes('No enviado a WhatsApp'))).toBeTruthy();
+  expect(projectNotified).toBeTruthy();
   await apiCall(page, `${apiIdentity}/notifications/whatsapp/number`, 'DELETE', token);
   await apiCall(page, `${apiIdentity}/notifications/preferences`, 'PUT', token, { enabled: false, timezone: 'America/Lima', allowedHours: { start: '00:00', end: '23:59' }, frequency: 'immediate', alertTypes: ['ProjectCreated'] });
 

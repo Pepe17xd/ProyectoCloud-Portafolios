@@ -7,6 +7,9 @@ import { signLocalToken } from '../shared/index.mjs';
 import { createLocalAuth } from '../services/identity-service/local-auth.mjs';
 
 const service = process.argv[2];
+if (process.env.NODE_ENV === 'production' || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+  throw new Error('The local API adapter, including demo identities, cannot run in AWS Lambda or production.');
+}
 const config = {
   identity: { port: 4101, table: 'cloudportfolio-identity-local', routes: ['users','tenants','memberships'] },
   portfolio: { port: 4102, table: 'cloudportfolio-portfolio-local', route: 'portfolios', topic: 'arn:aws:sns:us-east-1:000000000000:cloudportfolio-domain-local' },
@@ -43,6 +46,7 @@ const demoUsers = [
   { email: 'viewer-a@demo.local', password: 'Demo123!', userId: 'demo-viewer-a', tenantId: 'tenant-a', role: 'VIEWER', name: 'Valeria Viewer' },
   { email: 'admin-b@demo.local', password: 'Demo123!', userId: 'demo-admin-b', tenantId: 'tenant-b', role: 'ADMIN', name: 'Bruno Admin' },
   { email: 'manager-b@demo.local', password: 'Demo123!', userId: 'demo-manager-b', tenantId: 'tenant-b', role: 'MANAGER', name: 'Beatriz Manager' },
+  { email: 'viewer-b@demo.local', password: 'Demo123!', userId: 'demo-viewer-b', tenantId: 'tenant-b', role: 'VIEWER', name: 'Valeria Viewer' },
   { email: 'admin-c@demo.local', password: 'Demo123!', userId: 'demo-admin-c', tenantId: 'tenant-c', role: 'ADMIN', name: 'Carmen Admin' }
 ];
 const localAuth = service === 'identity' ? createLocalAuth(DynamoDBDocumentClient.from(new DynamoDBClient({ endpoint: process.env.DYNAMODB_ENDPOINT, region: process.env.AWS_REGION, credentials: process.env.DYNAMODB_ENDPOINT ? { accessKeyId: 'local', secretAccessKey: 'local' } : undefined })), { table: config.table }) : undefined;
@@ -73,7 +77,10 @@ const server = http.createServer(async (req, res) => {
     if (!allowAuthAttempt(`${ip}:${url.pathname}`)) return send(429, { error: 'Demasiados intentos. Espera 15 minutos y vuelve a intentarlo.' });
     try {
       const input = await readAuthBody(req);
-      if (url.pathname === '/auth/register') return send(201, await localAuth.register(input));
+      if (url.pathname === '/auth/register') {
+        if (demoUsers.some((user) => user.email.toLowerCase() === String(input.email || '').trim().toLowerCase())) return send(409, { error: 'Ese correo está reservado para una cuenta de demostración local.' });
+        return send(201, await localAuth.register(input));
+      }
       try { return send(200, await localAuth.login(input)); }
       catch (error) {
         if (error.status !== 401) throw error;

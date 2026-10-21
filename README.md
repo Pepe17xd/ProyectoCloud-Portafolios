@@ -15,6 +15,21 @@ La interfaz se sirve en `http://localhost:5173`; los seis servicios API usan los
 
 Para cargar las fixtures de demostración pequeñas, ejecuta explícitamente `npm run seed:demo`. No ejecutes procesos de carga académica masiva en el entorno local.
 
+## Probar ASTRA localmente
+
+Arranca Docker Desktop, ejecuta `npm run dev:local` y en otra terminal corre `npm run seed:demo` una vez. Landing: <http://localhost:5173/> · login: <http://localhost:5173/login> · registro: <http://localhost:5173/register>.
+
+| Cuenta | Tenant | Rol | Contraseña |
+|---|---|---|---|
+| `admin-a@demo.local` | Empresa A | ADMIN | `Demo123!` |
+| `manager-a@demo.local` | Empresa A | MANAGER | `Demo123!` |
+| `viewer-a@demo.local` | Empresa A | VIEWER | `Demo123!` |
+| `admin-b@demo.local` | Empresa B | ADMIN | `Demo123!` |
+| `manager-b@demo.local` | Empresa B | MANAGER | `Demo123!` |
+| `viewer-b@demo.local` | Empresa B | VIEWER | `Demo123!` |
+
+Estas cuentas son ficticias y solo para el adaptador local. Pasos, capacidades por rol, persistencia y diagnóstico: [docs/LOCAL_TESTING.md](docs/LOCAL_TESTING.md).
+
 ## Experiencia web
 
 - `/`: presentación pública ASTRA.
