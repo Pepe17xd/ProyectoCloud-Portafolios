@@ -29,17 +29,32 @@ async function apiCall(page: import('@playwright/test').Page, url: string, metho
 }
 
 test('landing, navegación pública, auth, asistente y notificaciones locales', async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on('pageerror', (error) => consoleErrors.push(error.message));
   await page.goto('/');
   await expect(page.getByRole('heading', { name: /De la visión a la ejecución/i })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Iniciar sesión' }).first()).toBeVisible();
+  await expect.poll(() => page.locator('.galaxy-backdrop img').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+  await page.screenshot({ path: 'docs/ASTRA_MILKY_WAY_SCREENSHOT.png', fullPage: false });
   await page.getByRole('link', { name: 'Registrarse' }).first().click();
-  await expect(page.getByText('Registro no disponible todavía')).toBeVisible();
-  await page.goto('/app');
-  await expect(page.getByLabel('Correo electrónico')).toBeVisible();
-  await page.getByLabel('Correo electrónico').fill('admin-a@demo.local');
-  await page.locator('#auth-password').fill('incorrecta');
-  await page.getByRole('button', { name: /iniciar sesión/i }).click();
-  await expect(page.getByRole('alert')).toContainText(/incorrectos/i);
+  await page.getByLabel('Nombre de la organización').fill(`Organización ${suffix}`);
+  await page.getByLabel('Tu nombre').fill('Astra Test');
+  const newEmail = `astra-${suffix}@example.test`;
+  await page.getByLabel('Correo electrónico').fill(newEmail);
+  await page.locator('#auth-password').fill('SafePassword123');
+  await page.locator('#auth-confirm-password').fill('SafePassword123');
+  await page.getByRole('button', { name: 'Crear organización' }).click();
+  await expect(page).toHaveURL(/\/app$/);
+  const registeredToken = await page.evaluate(() => localStorage.getItem('cloudportfolio.accessToken'));
+  const registeredProfile = await apiCall(page, `${apiIdentity}/profile`, 'GET', registeredToken);
+  expect(registeredProfile.status()).toBe(200);
+  const profile = await registeredProfile.json();
+  expect(profile.tenantId).toMatch(/^tenant-/);
+  expect(profile.role).toBe('ADMIN');
+  const registeredTenant = await apiCall(page, `${apiIdentity}/tenants/${encodeURIComponent(profile.tenantId)}`, 'GET', registeredToken);
+  expect((await registeredTenant.json()).name).toBe(`Organización ${suffix}`);
+  await page.evaluate(() => localStorage.clear());
+  await page.goto('/login');
   await login(page, 'admin-a@demo.local');
 
   const token = await page.evaluate(() => localStorage.getItem('cloudportfolio.accessToken'));
@@ -174,6 +189,7 @@ test('landing, navegación pública, auth, asistente y notificaciones locales', 
   await expect(page.getByRole('button', { name: 'Abrir menú' })).toBeVisible();
   const widths = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, page: document.documentElement.scrollWidth }));
   expect(widths.page).toBeLessThanOrEqual(widths.viewport + 1);
+  expect(consoleErrors).toEqual([]);
 });
 
 test('project API mantiene aislamiento entre tenant A y B', async ({ page }) => {

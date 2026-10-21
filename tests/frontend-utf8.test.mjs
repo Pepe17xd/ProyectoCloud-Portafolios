@@ -11,12 +11,15 @@ test('frontend sources are valid UTF-8 and HTML declares the matching charset', 
   assert.match(decoded[0], /<meta charset="UTF-8"\s*\/>/i);
 });
 
-test('auth and public routes keep Spanish text readable and registration honest', async () => {
+test('auth and public routes keep Spanish text readable and local registration real', async () => {
   const source = await readFile(new URL('../frontend/src/main.tsx', import.meta.url), 'utf8');
   assert.match(source, /Contraseña/);
   assert.match(source, /Iniciar sesión/);
-  assert.match(source, /Correo o contrase\\u00f1a incorrectos/);
-  assert.match(source, /Registro no disponible todavía/);
+  assert.match(source, /Correo o contraseña incorrectos/);
+  assert.match(source, /auth\/\$\{register \? 'register' : 'login'\}/);
+  assert.match(source, /Nombre de la organización/);
+  assert.match(source, /Confirma la contraseña/);
+  assert.doesNotMatch(source, /El registro de organizaciones todavía no está disponible/);
   assert.match(source, /pathname==='\/login'/);
   assert.match(source, /pathname==='\/register'/);
   assert.match(source, /pathname==='\/app'/);

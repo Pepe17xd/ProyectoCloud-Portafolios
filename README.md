@@ -19,12 +19,14 @@ Para cargar las fixtures de demostración pequeñas, ejecuta explícitamente `np
 
 - `/`: presentación pública ASTRA.
 - `/login`: autenticación local o Cognito configurado.
-- `/register`: informa que el registro de organizaciones no está habilitado porque todavía no existe un aprovisionamiento seguro.
+- `/register`: crea una organización local aislada y su usuario ADMIN inicial cuando `VITE_AUTH_MODE=local`; AWS todavía requiere un flujo de aprovisionamiento con Cognito.
 - `/app` y `/app/portfolios`, `/app/projects`, `/app/resources`, `/app/budgets`, `/app/priorities`: consola protegida.
 
 La vista previa de la landing está identificada como demostración y no consulta datos de tenants. El dashboard interno consume las APIs.
 
 Consulta [frontend/README.md](frontend/README.md) para la configuración del frontend y [ASTRA_FRONTEND_REPORT.md](ASTRA_FRONTEND_REPORT.md) para los cambios, pruebas y límites de esta actualización.
+
+La landing usa una fotografía local de la Vía Láctea de ESO/F. Char con crédito visible y atribución CC BY 4.0. La guía de fuente y adaptación está en [docs/ASTRA_MILKY_WAY_ASSET.md](docs/ASTRA_MILKY_WAY_ASSET.md). El registro de organizaciones funciona únicamente con el adaptador local; no está conectado al aprovisionamiento AWS Cognito.
 
 ## Stack
 
@@ -58,7 +60,7 @@ Playwright requiere el stack local ejecutándose (`npm run dev:local`), que inic
 
 ## Recordatorios, acciones y reportes Orbital
 
-El dashboard incluye propuestas deterministas de recordatorio, confirmación explícita, recurrencia una vez/diaria/semanal, pausa/reanudación/cancelación e historial. La API persiste recordatorios por tenant/usuario; `reminder-scheduler.mjs` consulta el índice de vencimientos y entrega en el buzón local con etiqueta de simulación. Los reportes de estado, avance, vencimientos, recursos, presupuestos, prioridades y riesgos consultan APIs reales; se persisten y se exportan a CSV. El alcance se limita a 100 resultados por servicio; no hay filtros personalizados ni PDF.
+El dashboard incluye propuestas deterministas de recordatorio, confirmación explícita, recurrencia una vez/diaria/semanal, pausa/reanudación/cancelación e historial. La API persiste recordatorios por tenant/usuario; `reminder-scheduler.mjs` consulta el índice de vencimientos y entrega en el buzón local con etiqueta de simulación. Los reportes de estado, avance, vencimientos, recursos, presupuestos, prioridades y riesgos consultan APIs reales; se persisten y se exportan a CSV. Se recorren hasta 10 páginas de 100 elementos por servicio (máximo 1 000); el reporte marca si queda truncado. No hay filtros personalizados ni PDF.
 
 Reinicia los procesos después de cambios, ejecuta `node scripts/init-local.mjs` para crear la tabla nueva de recordatorios si no existía y después `npm run dev:local`. Esta inicialización local no borra registros ni corre seeds.
 

@@ -24,7 +24,7 @@ npm run dev:local
 
 Si ya había un stack abierto antes de actualizar el código, detén ese grupo con Ctrl+C en su terminal y vuelve a ejecutar `npm run dev:local`; no borres sus volúmenes. Las rutas nuevas de inteligencia/notificaciones aparecen al reiniciar los procesos Node.
 
-Frontend: http://localhost:5173. APIs: puertos 4101–4106. Acceso demo del adaptador local: `admin-a@demo.local`, `manager-a@demo.local`, `viewer-a@demo.local`, `admin-b@demo.local` o `manager-b@demo.local`; contraseña común de demostración `Demo123!`. Son cuentas ficticias de desarrollo. No reutilizar en AWS.
+Frontend: http://localhost:5173. APIs: puertos 4101–4106. Acceso demo del adaptador local: `admin-a@demo.local`, `manager-a@demo.local`, `viewer-a@demo.local`, `admin-b@demo.local` o `manager-b@demo.local`; contraseña común de demostración `Demo123!`. Son cuentas ficticias de desarrollo. No reutilizar en AWS. También puedes crear una organización aislada en `/register`: se crea el tenant y su primer usuario ADMIN mediante una transacción DynamoDB local. La contraseña requiere entre 12 y 128 caracteres con mayúscula, minúscula y número; el correo es único globalmente en el adaptador local.
 
 El seed demo pequeño solo se ejecuta por decisión explícita con `npm run seed:demo`; este comando añade datos y no los borra. **No ejecutar `npm run seed:full` en local.** No usar `docker compose down -v` si se desean conservar las bases persistentes.
 
@@ -57,7 +57,9 @@ Los endpoints de Vite se leen desde variables `VITE_API_*`; `VITE_AUTH_MODE=loca
 
 El dashboard permite proponer recordatorios con el formato explícito `Recuérdame <descripción> mañana a las HH:MM`, elegir una vez/diario/semanal, revisar y confirmar la propuesta, pausar, reanudar o cancelar. La tabla de recordatorios local usa un índice por vencimiento; el scheduler es persistente y vuelve a leer los registros tras reinicio. Las entregas del entorno local aparecen en el buzón de Identity y dicen “Simulado localmente — No enviado a WhatsApp”.
 
-Los reportes se consultan en APIs de dominio y se guardan por tenant en Project Service; se pueden descargar en CSV. Cada reporte declara la fecha, servicios consultados y si el alcance es parcial. El límite actual es de 100 elementos por API; no se convierten monedas ni se aplican filtros personalizados.
+Los reportes se consultan en APIs de dominio y se guardan por tenant en Project Service; se pueden descargar en CSV. Cada reporte declara la fecha, servicios consultados y si el alcance es parcial. Cada API permite recorrer hasta 10 páginas de 100 elementos (máximo 1 000) y el reporte indica truncamiento; no se convierten monedas ni se aplican filtros personalizados.
+
+El registro AWS no se habilita con el endpoint local: requiere Cognito SignUp con verificación de correo y un trigger PostConfirmation idempotente que aprovisione tenant, perfil y membership con permisos mínimos. El administrador inicial debe derivarse de ese flujo protegido, nunca de un rol enviado por el cliente. No se ha desplegado ni probado esa integración.
 
 Para código nuevo, detener el stack previo de forma normal con Ctrl+C y levantar `npm run dev:local`. El initializer crea de forma no destructiva `cloudportfolio-reminders-local` con `DueIndex` cuando todavía no existe. No borra tablas ni volúmenes. El worker `scripts/reminder-scheduler.mjs` es iniciado por `dev:local` y mantiene entregas locales. La configuración AWS declara un Lambda EventBridge por minuto, pendiente de `serverless print/package` y validación de permisos AWS Academy.
 

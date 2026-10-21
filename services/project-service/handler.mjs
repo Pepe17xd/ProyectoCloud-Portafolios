@@ -31,6 +31,33 @@ const intelligenceSources = {
   assignments: () => process.env.RESOURCE_API_URL,
   priorities: () => process.env.PRIORITY_API_URL,
 };
+export async function collectPages(fetchPage, { maxPages = 10 } = {}) {
+  const items = []; let cursor; let truncated = false;
+  for (let page = 0; page < maxPages; page += 1) {
+    const payload = await fetchPage(cursor);
+    items.push(...(Array.isArray(payload) ? payload : Array.isArray(payload?.items) ? payload.items : []));
+    cursor = Array.isArray(payload) ? null : payload?.nextCursor || null;
+    if (!cursor) break;
+    if (page === maxPages - 1) truncated = true;
+  }
+  return { items, truncated };
+}
+async function fetchDomainPages(base, route, bearer) {
+  return collectPages(async (cursor) => {
+    const url = new URL(`${base.replace(/\/$/, '')}/${route}`);
+    url.searchParams.set('limit', '100');
+    if (cursor) url.searchParams.set('cursor', cursor);
+    const response = await fetch(url, { headers: { Authorization: bearer }, signal: AbortSignal.timeout(3000) });
+    if (!response.ok) throw new Error(`Domain API returned HTTP ${response.status}`);
+    return response.json();
+  });
+}
+async function queryTaskPages(tenantId) {
+  return collectPages(async (cursor) => {
+    const data = await db.send(new QueryCommand({ TableName: table, KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)', ExpressionAttributeValues: { ':pk': `TENANT#${tenantId}`, ':prefix': 'TASK#' }, Limit: 100, ExclusiveStartKey: decodeCursor(cursor, tenantId) }));
+    return { items: data.Items || [], nextCursor: data.LastEvaluatedKey ? Buffer.from(JSON.stringify(data.LastEvaluatedKey)).toString('base64url') : null };
+  });
+}
 async function askIntelligence(event, tenantId, userId, role) {
   const body = parse(event);
   if (typeof body.question !== 'string' || !body.question.trim() || body.question.length > 500) return reply(400, { error: 'Question must contain 1–500 characters' });
@@ -42,28 +69,32 @@ async function askIntelligence(event, tenantId, userId, role) {
   recent.push(now); intelligenceHits.set(userId, recent);
   const bearer = event.headers?.authorization || event.headers?.Authorization;
   const question = body.question.trim().toLocaleLowerCase('es');
-  const relevant = question.includes('presupuest') || question.includes('gast') ? ['projects', 'budgets']
-    : question.includes('recurso') || question.includes('asign') ? ['projects', 'resources', 'assignments']
-      : question.includes('prior') ? ['projects', 'priorities']
-        : question.includes('portafolio') ? ['projects', 'portfolios']
-      : question.includes('tarea') ? ['projects', 'tasks']
-          : ['projects', 'budgets', 'resources', 'priorities'];
+  const recognized = /proyect|atras|retras|vencid|portafolio|presupuest|gast|recurso|asign|prior|tarea|resum|estado|riesgo|hoy/.test(question);
+  if (!recognized) return reply(422, { error: 'No reconozco esa consulta todavia. Prueba: "Que proyectos estan atrasados?", "Que presupuesto esta cerca del limite?", "Que recursos estan sobreasignados?", "Que proyectos tienen mayor prioridad?" o "Resume el estado de mis proyectos".', mode: 'deterministic-local-rules' });
+  const allDomains = /resum|estado general|panorama|mis proyectos/.test(question);
+  const relevant = allDomains ? ['projects', 'tasks', 'budgets', 'resources', 'assignments', 'priorities', 'portfolios']
+    : /atras|retras|vencid|plazo|fecha/.test(question) ? ['projects', 'tasks']
+      : /presupuest|gast|limite|saldo/.test(question) ? ['projects', 'budgets']
+        : /recurso|asign|carga|capacidad|sobreasign/.test(question) ? ['projects', 'resources', 'assignments']
+          : /prior/.test(question) ? ['projects', 'priorities']
+            : /portafolio/.test(question) ? ['projects', 'portfolios']
+              : /tarea|hoy/.test(question) ? ['projects', 'tasks']
+                : /proyect/.test(question) ? ['projects'] : ['projects', 'budgets', 'resources', 'priorities'];
   const results = {};
   const unavailable = [];
+  const truncated = [];
   for (const name of relevant) {
     if (name === 'tasks') {
-      const data = await db.send(new QueryCommand({ TableName: table, KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)', ExpressionAttributeValues: { ':pk': `TENANT#${tenantId}`, ':prefix': 'TASK#' }, Limit: 100 }));
-      results.tasks = data.Items || [];
+      const data = await queryTaskPages(tenantId);
+      results.tasks = data.items; if (data.truncated) truncated.push(name);
       continue;
     }
     const base = intelligenceSources[name]();
     if (!base) { unavailable.push(name); continue; }
     try {
       const route = name === 'assignments' ? 'assignments' : name;
-      const response = await fetch(`${base.replace(/\/$/, '')}/${route}?limit=100`, { headers: { Authorization: bearer }, signal: AbortSignal.timeout(2500) });
-      if (!response.ok) { unavailable.push(name); continue; }
-      const payload = await response.json();
-      results[name] = Array.isArray(payload) ? payload : (payload.items || []);
+      const data = await fetchDomainPages(base, route, bearer);
+      results[name] = data.items; if (data.truncated) truncated.push(name);
     } catch { unavailable.push(name); }
   }
   const projects = results.projects || [];
@@ -76,7 +107,7 @@ async function askIntelligence(event, tenantId, userId, role) {
   const reviewHorizon = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const reviewTasks = tasks.filter((task) => task.dueDate && task.dueDate <= reviewHorizon && !['DONE', 'COMPLETED'].includes(String(task.status).toUpperCase()));
   const facts = [];
-  if (relevant.includes('projects')) facts.push(`${projects.length} proyectos consultados en la primera página (máximo 100).`, `${late.length} proyectos con fecha final vencida entre los consultados.`, `${projects.filter((p) => ['DONE','COMPLETED','COMPLETE'].includes(String(p.status).toUpperCase())).length} proyectos cerrados entre los consultados.`);
+  if (relevant.includes('projects')) facts.push(`${projects.length} proyectos consultados${truncated.includes('projects') ? ' (límite de 1 000; alcance truncado)' : ''}.`, `${late.length} proyectos con fecha final vencida entre los consultados.`, `${projects.filter((p) => ['DONE','COMPLETED','COMPLETE'].includes(String(p.status).toUpperCase())).length} proyectos cerrados entre los consultados.`);
   if (relevant.includes('budgets')) facts.push(`${nearLimit.length} presupuestos consultados con consumo igual o superior al 80 %.`);
   if (relevant.includes('resources')) facts.push(`${(results.resources || []).length} recursos consultados.`);
   if (relevant.includes('assignments')) {
@@ -94,7 +125,7 @@ async function askIntelligence(event, tenantId, userId, role) {
     const attention = portfolios.filter((portfolio) => projects.some((project) => project.portfolioId === portfolio.id && late.includes(project)));
     facts.push(`${portfolios.length} portafolios consultados; ${attention.length} contienen al menos un proyecto vencido de los registros visibles.`);
   }
-  if (relevant.includes('tasks')) facts.push(`${tasks.length} tareas consultadas en la primera página; ${lateTasks.length} tienen vencimiento pasado y ${reviewTasks.length} vencen dentro de los próximos siete días o ya están vencidas.`);
+  if (relevant.includes('tasks')) facts.push(`${tasks.length} tareas consultadas${truncated.includes('tasks') ? ' (límite de 1 000; alcance truncado)' : ''}; ${lateTasks.length} tienen vencimiento pasado y ${reviewTasks.length} vencen dentro de los próximos siete días o ya están vencidas.`);
   const suggestions = [];
   if (late.length) suggestions.push('Revisar fechas, estado y responsable de los proyectos vencidos.');
   if (nearLimit.length) suggestions.push('Revisar gastos pendientes y saldo de los presupuestos cercanos al límite.');
@@ -102,7 +133,7 @@ async function askIntelligence(event, tenantId, userId, role) {
   else if (reviewTasks.length) suggestions.push('Revisar las tareas próximas a vencer y confirmar que tienen responsable y fecha vigentes.');
   if (!suggestions.length) suggestions.push('No se detectó una alerta en las métricas disponibles; confirma las fechas y registros si esperabas otro resultado.');
   console.info(JSON.stringify({ level: 'info', service: 'project', action: 'intelligence.query', userId, tenantId, domains: relevant, unavailable }));
-  return reply(200, { mode: 'deterministic-local-rules', readOnly: true, facts, suggestions, unavailable, relatedProjects: late.slice(0, 10).map((p) => ({ id: p.id, name: p.name, status: p.status, endDate: p.endDate })), relatedTasks: reviewTasks.slice(0, 10).map((task) => ({ id: task.id, projectId: task.projectId, title: task.title, dueDate: task.dueDate })), scope: { domains: relevant, pageLimit: 100, tenantScopedByVerifiedBearer: true }, generatedAt: new Date().toISOString() });
+  return reply(200, { mode: 'deterministic-local-rules', readOnly: true, facts, suggestions, unavailable, relatedProjects: late.slice(0, 10).map((p) => ({ id: p.id, name: p.name, status: p.status, endDate: p.endDate })), relatedTasks: reviewTasks.slice(0, 10).map((task) => ({ id: task.id, projectId: task.projectId, title: task.title, dueDate: task.dueDate })), scope: { domains: relevant, pageSize: 100, maxItemsPerDomain: 1000, truncated, tenantScopedByVerifiedBearer: true }, generatedAt: new Date().toISOString() });
 }
 
 function csvCell(value) {
@@ -116,22 +147,21 @@ function reportCsv(record) {
 }
 async function reportSources(names, event, tenantId) {
   const bearer = event.headers?.authorization || event.headers?.Authorization;
-  const result = {}; const unavailable = [];
+  const result = {}; const unavailable = []; const truncated = [];
   for (const name of names) {
     if (name === 'tasks') {
-      const data = await db.send(new QueryCommand({ TableName: table, KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)', ExpressionAttributeValues: { ':pk': `TENANT#${tenantId}`, ':prefix': 'TASK#' }, Limit: 100 }));
-      result.tasks = data.Items || []; continue;
+      const data = await queryTaskPages(tenantId);
+      result.tasks = data.items; if (data.truncated) truncated.push(name); continue;
     }
     const url = intelligenceSources[name]?.();
     if (!url) { unavailable.push(name); continue; }
     try {
       const route = name === 'assignments' ? 'assignments' : name;
-      const response = await fetch(`${url.replace(/\/$/, '')}/${route}?limit=100`, { headers: { Authorization: bearer }, signal: AbortSignal.timeout(3000) });
-      if (!response.ok) { unavailable.push(name); continue; }
-      const payload = await response.json(); result[name] = Array.isArray(payload) ? payload : (payload.items || []);
+      const data = await fetchDomainPages(url, route, bearer); result[name] = data.items;
+      if (data.truncated) truncated.push(name);
     } catch { unavailable.push(name); }
   }
-  return { result, unavailable };
+  return { result, unavailable, truncated };
 }
 async function reportsApi(event, tenantId, userId, role) {
   const method = event.requestContext?.http?.method;
@@ -150,7 +180,7 @@ async function reportsApi(event, tenantId, userId, role) {
       'resource-usage': ['resources', 'assignments'], budgets: ['budgets'], priorities: ['priorities'], risks: ['projects', 'budgets', 'tasks'],
     };
     const sources = plans[body.type];
-    const { result, unavailable } = await reportSources(sources, event, tenantId);
+    const { result, unavailable, truncated } = await reportSources(sources, event, tenantId);
     const today = new Date().toISOString().slice(0, 10);
     let rows = [];
     if (body.type === 'portfolio-status') rows = (result.portfolios || []).map((p) => ({ portfolioId: p.id, portfolio: p.name, projectCount: (result.projects || []).filter((x) => x.portfolioId === p.id).length, projectsAtRisk: (result.projects || []).filter((x) => x.portfolioId === p.id && x.endDate < today && !['DONE', 'COMPLETED'].includes(String(x.status).toUpperCase())).length }));
@@ -168,7 +198,7 @@ async function reportsApi(event, tenantId, userId, role) {
     }
     rows = rows.map((row) => Object.fromEntries(Object.entries(row).filter(([, value]) => value !== undefined)));
     const id = uuid(); const generatedAt = new Date().toISOString();
-    const record = { pk: `TENANT#${tenantId}`, sk: `REPORT#${id}`, id, tenantId, generatedBy: userId, type: body.type, generatedAt, filters: {}, sourceServices: sources.map((name) => name === 'tasks' ? 'Project (tasks)' : name), unavailable, scope: { pageLimitPerService: 100, partial: unavailable.length > 0 || sources.some((name) => (result[name] || []).length === 100), tenantScopedByVerifiedBearer: true }, rows };
+    const record = { pk: `TENANT#${tenantId}`, sk: `REPORT#${id}`, id, tenantId, generatedBy: userId, type: body.type, generatedAt, filters: {}, sourceServices: sources.map((name) => name === 'tasks' ? 'Project (tasks)' : name), unavailable, scope: { pageSize: 100, maxItemsPerService: 1000, truncated, partial: unavailable.length > 0 || truncated.length > 0, tenantScopedByVerifiedBearer: true }, rows };
     await db.send(new PutCommand({ TableName: table, Item: record, ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)' }));
     console.info(JSON.stringify({ action: 'report.generated', tenantId, userId, reportId: id, type: body.type, rowCount: rows.length, unavailable }));
     return reply(201, { report: { ...record, csv: reportCsv(record), mediaType: 'text/csv; charset=utf-8', fileName: `astra-${body.type}-${id}.csv` } });

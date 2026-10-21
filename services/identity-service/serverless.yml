@@ -34,6 +34,11 @@ provider:
           Action: [sns:Publish]
           Resource: ${env:DOMAIN_TOPIC_ARN, 'arn:aws:sns:us-east-1:000000000000:placeholder'}
 functions:
+  # /auth/register is intentionally not an AWS route. Local organization signup
+  # uses scripts/local-api.mjs only. AWS signup requires Cognito SignUp with
+  # verified email plus an idempotent PostConfirmation provisioning Lambda for
+  # tenant/profile/membership rows; role assignment must be server-side. Do not
+  # expose the local JWT adapter or accept tenant/role claims from the browser.
   api:
     handler: handler.api
     timeout: 20

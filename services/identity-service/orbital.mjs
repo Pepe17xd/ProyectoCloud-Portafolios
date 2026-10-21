@@ -1,6 +1,6 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { parse, reply, uuid } from '@cloudportfolio/shared';
+import { decodeCursor, parse, reply, uuid } from '@cloudportfolio/shared';
 
 const endpoint = process.env.DYNAMODB_ENDPOINT;
 const client = new DynamoDBClient({ endpoint, region: process.env.AWS_REGION || 'us-east-1', ...(endpoint ? { credentials: { accessKeyId: 'local', secretAccessKey: 'local' } } : {}) });
@@ -52,12 +52,30 @@ function nextRecurringDue(dueAt, timezone, days) {
 }
 function parseReminder(text, timezone) {
   if (typeof text !== 'string' || text.length > 300) throw Object.assign(new Error('La solicitud debe tener hasta 300 caracteres.'), { status: 400 });
-  const match = text.trim().match(/^recu[eé]rdame\s+(.{3,180}?)\s+(?:el\s+)?(hoy|ma[nñ]ana|\d{4}-\d{2}-\d{2})\s+a\s+las\s+(\d{1,2}):(\d{2})$/i);
+  const weekly = text.trim().match(/^recu[eé]rdame\s+(.{3,180}?)\s+(?:todos\s+los\s+)?(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\s+a\s+las\s+(\d{1,2})(?::(\d{2}))?$/i);
+  if (weekly) {
+    const names = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const targetDay = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'].indexOf(weekly[2].toLocaleLowerCase('es'));
+    const time = `${String(Number(weekly[3])).padStart(2, '0')}:${weekly[4] || '00'}`;
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw Object.assign(new Error('La hora debe estar entre 00:00 y 23:59.'), { status: 400 });
+    const now = new Date();
+    const todayWeekday = names.indexOf(new Intl.DateTimeFormat('en-US', { timeZone: timezone, weekday: 'long' }).format(now).toLowerCase());
+    let days = (targetDay - todayWeekday + 7) % 7;
+    const today = localDateParts(now, timezone);
+    if (days === 0) {
+      const currentTime = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(now);
+      if (time <= currentTime) days = 7;
+    }
+    const date = new Date(Date.UTC(Number(today.year), Number(today.month) - 1, Number(today.day) + days));
+    const dateText = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+    return { title: weekly[1].trim(), dueAt: zonedInstant(dateText, time, timezone), recurrence: 'WEEKLY' };
+  }
+  const match = text.trim().match(/^recu[eé]rdame\s+(.{3,180}?)\s+(?:el\s+)?(hoy|ma[nñ]ana|\d{4}-\d{2}-\d{2})\s+a\s+las\s+(\d{1,2})(?::(\d{2}))?$/i);
   if (!match) throw Object.assign(new Error('Solicitud ambigua. Usa: “Recuérdame revisar el proyecto mañana a las 09:00”.'), { status: 422 });
   const title = match[1].trim();
   const dateToken = match[2].toLocaleLowerCase('es');
   const date = dateToken === 'hoy' ? `${localDateParts(new Date(), timezone).year}-${localDateParts(new Date(), timezone).month}-${localDateParts(new Date(), timezone).day}` : ['mañana', 'manana'].includes(dateToken) ? tomorrowDate(timezone) : dateToken;
-  const time = `${String(Number(match[3])).padStart(2, '0')}:${match[4]}`;
+  const time = `${String(Number(match[3])).padStart(2, '0')}:${match[4] || '00'}`;
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw Object.assign(new Error('La hora debe estar entre 00:00 y 23:59.'), { status: 400 });
   const dueAt = zonedInstant(date, time, timezone);
   if (Date.parse(dueAt) <= Date.now() || Date.parse(dueAt) > Date.now() + 366 * 24 * 60 * 60 * 1000) throw Object.assign(new Error('El recordatorio debe quedar dentro de los próximos 366 días.'), { status: 400 });
@@ -80,6 +98,11 @@ async function projectRequest(event, path, method = 'GET', body) {
 }
 const itemKey = (tenantId, userId, id) => ({ pk: `TENANT#${tenantId}`, sk: `${reminderPrefix(userId)}${id}` });
 const gsi = (dueAt, id) => ({ gsi1pk: 'REMINDER#ACTIVE', gsi1sk: `${dueAt}#${id}` });
+function scopedCursor(cursor, tenantId, prefix) {
+  const key = decodeCursor(cursor, tenantId);
+  if (key && !key.sk.startsWith(prefix)) throw Object.assign(new Error('Invalid cursor scope'), { status: 400 });
+  return key;
+}
 
 export async function orbitalApi(event, actor, method, path) {
   const { tenantId, userId, role } = actor;
@@ -107,7 +130,7 @@ export async function orbitalApi(event, actor, method, path) {
       if (error.status) throw error;
       throw Object.assign(error, { status: 400 });
     }
-    const recurrence = body.recurrence || 'ONCE';
+    const recurrence = interpreted.recurrence || body.recurrence || 'ONCE';
     if (!['ONCE', 'DAILY', 'WEEKLY'].includes(recurrence)) return reply(400, { error: 'Recurrencia inválida.' });
     const id = uuid();
     const createdAt = new Date().toISOString();
@@ -117,8 +140,9 @@ export async function orbitalApi(event, actor, method, path) {
     return reply(201, { proposal: { id, kind: proposal.kind, title: proposal.title, dueAt: proposal.dueAt, timezone, recurrence, status: proposal.status, expiresAt: proposal.expiresAt }, confirmationRequired: true, interpreter: 'deterministic-limited-rules' });
   }
   if (path === '/intelligence/actions' && method === 'GET') {
-    const data = await db.send(new QueryCommand({ TableName: recordsTable, KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)', ExpressionAttributeValues: { ':pk': `TENANT#${tenantId}`, ':prefix': proposalPrefix(userId) }, Limit: 50, ScanIndexForward: false }));
-    return reply(200, { items: data.Items || [] });
+    const prefix = proposalPrefix(userId);
+    const data = await db.send(new QueryCommand({ TableName: recordsTable, KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)', ExpressionAttributeValues: { ':pk': `TENANT#${tenantId}`, ':prefix': prefix }, Limit: Math.min(Number(event.queryStringParameters?.limit) || 50, 100), ExclusiveStartKey: scopedCursor(event.queryStringParameters?.cursor, tenantId, prefix), ScanIndexForward: false }));
+    return reply(200, { items: data.Items || [], nextCursor: data.LastEvaluatedKey ? Buffer.from(JSON.stringify(data.LastEvaluatedKey)).toString('base64url') : null });
   }
   const confirmMatch = path.match(/^\/intelligence\/actions\/([^/]+)\/confirm$/);
   if (confirmMatch && method === 'POST') {
@@ -168,7 +192,8 @@ export async function orbitalApi(event, actor, method, path) {
     return reply(201, { reminder, idempotentReplay: false });
   }
   if (path === '/reminders' && method === 'GET') {
-    const data = await db.send(new QueryCommand({ TableName: remindersTable, KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)', ExpressionAttributeValues: { ':pk': `TENANT#${tenantId}`, ':prefix': reminderPrefix(userId) }, Limit: 100, ScanIndexForward: false }));
+    const prefix = reminderPrefix(userId);
+    const data = await db.send(new QueryCommand({ TableName: remindersTable, KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)', ExpressionAttributeValues: { ':pk': `TENANT#${tenantId}`, ':prefix': prefix }, Limit: Math.min(Number(event.queryStringParameters?.limit) || 50, 100), ExclusiveStartKey: scopedCursor(event.queryStringParameters?.cursor, tenantId, prefix), ScanIndexForward: false }));
     return reply(200, { items: data.Items || [], nextCursor: data.LastEvaluatedKey ? Buffer.from(JSON.stringify(data.LastEvaluatedKey)).toString('base64url') : null });
   }
   const reminderMatch = path.match(/^\/reminders\/([^/]+)$/);

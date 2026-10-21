@@ -6,7 +6,7 @@ Aplicación React 19 + TypeScript + Vite para la experiencia pública y el espac
 
 - `/`: landing pública con contenido de demostración estático e identificado como ilustrativo.
 - `/login`: acceso local mediante `POST /auth/login` de Identity o acceso Cognito cuando está configurado.
-- `/register`: explica que el registro está deshabilitado; no crea usuarios ni tenants.
+- `/register`: con `VITE_AUTH_MODE=local`, crea en forma transaccional una organización de demostración y el usuario ADMIN inicial. En AWS muestra que el aprovisionamiento Cognito todavía está pendiente y no crea cuentas.
 - `/app` y `/app/{portfolios,projects,resources,budgets,priorities}`: rutas protegidas por la sesión local o Cognito.
 
 La navegación interna conserva el path de la sección. El backend mantiene la autoridad sobre tenant y permisos; la interfaz no ofrece un selector que permita cambiar `tenantId`.

@@ -1,7 +1,10 @@
 import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { signLocalToken } from '../shared/index.mjs';
+import { createLocalAuth } from '../services/identity-service/local-auth.mjs';
 
 const service = process.argv[2];
 const config = {
@@ -42,12 +45,44 @@ const demoUsers = [
   { email: 'manager-b@demo.local', password: 'Demo123!', userId: 'demo-manager-b', tenantId: 'tenant-b', role: 'MANAGER', name: 'Beatriz Manager' },
   { email: 'admin-c@demo.local', password: 'Demo123!', userId: 'demo-admin-c', tenantId: 'tenant-c', role: 'ADMIN', name: 'Carmen Admin' }
 ];
+const localAuth = service === 'identity' ? createLocalAuth(DynamoDBDocumentClient.from(new DynamoDBClient({ endpoint: process.env.DYNAMODB_ENDPOINT, region: process.env.AWS_REGION, credentials: process.env.DYNAMODB_ENDPOINT ? { accessKeyId: 'local', secretAccessKey: 'local' } : undefined })), { table: config.table }) : undefined;
+const authWindows = new Map();
+function allowAuthAttempt(key, now = Date.now()) {
+  const current = authWindows.get(key) || { startedAt: now, count: 0 };
+  if (now - current.startedAt >= 15 * 60_000) { current.startedAt = now; current.count = 0; }
+  current.count += 1;
+  authWindows.set(key, current);
+  return current.count <= 12;
+}
+async function readAuthBody(req) {
+  let raw = '';
+  for await (const chunk of req) {
+    raw += chunk;
+    if (raw.length > 16_384) throw Object.assign(new Error('Request too large'), { status: 413 });
+  }
+  try { return JSON.parse(raw || '{}'); } catch { throw Object.assign(new Error('Invalid JSON'), { status: 400 }); }
+}
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', 'http://localhost');
   const send = (status, body) => { res.writeHead(status, { 'content-type': 'application/json', 'access-control-allow-origin': process.env.CORS_ORIGIN, 'access-control-allow-headers': 'authorization,content-type', 'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS' }); res.end(JSON.stringify(body)); };
   if (req.method === 'OPTIONS') return send(204, {});
   if (url.pathname === '/healthz') return send(200, { status: 'ok', service });
+  if (service === 'identity' && (url.pathname === '/auth/register' || url.pathname === '/auth/login') && req.method === 'POST') {
+    const ip = req.socket.remoteAddress || 'unknown';
+    if (!allowAuthAttempt(`${ip}:${url.pathname}`)) return send(429, { error: 'Demasiados intentos. Espera 15 minutos y vuelve a intentarlo.' });
+    try {
+      const input = await readAuthBody(req);
+      if (url.pathname === '/auth/register') return send(201, await localAuth.register(input));
+      try { return send(200, await localAuth.login(input)); }
+      catch (error) {
+        if (error.status !== 401) throw error;
+        const user = demoUsers.find((candidate) => candidate.email.toLowerCase() === String(input.email || '').trim().toLowerCase() && candidate.password === input.password);
+        if (!user) throw error;
+        return send(200, { accessToken: signLocalToken(user), tokenType: 'Bearer', expiresIn: 3600, user: { id: user.userId, email: user.email, name: user.name, tenantId: user.tenantId, role: user.role } });
+      }
+    } catch (error) { return send(error.status || 500, { error: error.status ? error.message : 'No se pudo completar la autenticación local.' }); }
+  }
   if (service === 'identity' && url.pathname === '/auth/login' && req.method === 'POST') {
     let raw = ''; for await (const chunk of req) raw += chunk;
     let input; try { input = JSON.parse(raw); } catch { return send(400, { error: 'Invalid JSON' }); }
