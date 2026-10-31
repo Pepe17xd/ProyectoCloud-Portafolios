@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowRight, Save, Trash2 } from 'lucide-react';
+import './DecisionLab.css';
 
 type Request = <T = any>(module: string, path: string, method?: string, body?: unknown) => Promise<T>;
 type Props = { request: Request };

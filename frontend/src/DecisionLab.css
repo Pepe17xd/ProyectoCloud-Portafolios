@@ -1,0 +1,23 @@
+.decision-lab { display: grid; gap: 1rem; min-width: 0; }
+.decision-lab .decision-source { color: var(--text-secondary, #a7b5c8); margin: .75rem 0 1rem; }
+.decision-scope, .decision-controls, .decision-save { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .8rem; margin: .8rem 0; }
+.decision-scenarios, .decision-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: .8rem; margin: 1rem 0; }
+.decision-scenario { min-width: 0; padding: 1rem; border: 1px solid var(--border, #304052); border-radius: 10px; background: var(--surface, #1b2430); }
+.decision-scenario legend { color: var(--text-primary, #e6ecf3); font-weight: 650; padding: 0 .4rem; }
+.decision-lab label { display: grid; gap: .35rem; color: var(--text-secondary, #a7b5c8); font-size: .9rem; }
+.decision-lab input, .decision-lab select { min-width: 0; width: 100%; }
+.decision-scenario details { border-top: 1px solid var(--border, #304052); margin-top: .8rem; padding-top: .7rem; }
+.decision-scenario summary { cursor: pointer; color: var(--text-primary, #e6ecf3); font-size: .9rem; }
+.decision-scenario small, .decision-source { line-height: 1.5; }
+.decision-results article { min-width: 0; padding: .9rem; border: 1px solid var(--border, #304052); border-radius: 9px; background: var(--surface, #1b2430); overflow-wrap: anywhere; }
+.decision-results h3 { margin: 0 0 .75rem; }
+.decision-results dl { margin: 0; }
+.decision-results dl div { display: grid; grid-template-columns: minmax(100px, .7fr) 1.5fr; gap: .5rem; border-top: 1px solid var(--border, #304052); padding: .5rem 0; }
+.decision-results dt { color: var(--text-secondary, #a7b5c8); }
+.decision-results dd { margin: 0; overflow-wrap: anywhere; }
+.decision-uncalculated { color: var(--text-secondary, #a7b5c8); }
+.decision-lab .tableWrap { overflow-x: auto; }
+.decision-lab td { min-width: 150px; }
+.decision-save { align-items: end; margin-top: 1rem; }
+.decision-lab .rowActions { flex-wrap: wrap; gap: .4rem; }
+@media (max-width: 640px) { .decision-results dl div { grid-template-columns: 1fr; gap: .2rem; } .decision-scenario { padding: .75rem; } }
