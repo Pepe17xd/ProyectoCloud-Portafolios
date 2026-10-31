@@ -1,4 +1,4 @@
-import { DynamoDBClient, CreateTableCommand, DescribeTableCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, CreateTableCommand, DescribeTableCommand, UpdateTableCommand } from '@aws-sdk/client-dynamodb';
 import { S3Client, CreateBucketCommand, PutPublicAccessBlockCommand, PutBucketCorsCommand } from '@aws-sdk/client-s3';
 import { SNSClient, CreateTopicCommand, ListSubscriptionsByTopicCommand, SubscribeCommand, SetSubscriptionAttributesCommand } from '@aws-sdk/client-sns';
 import { SQSClient, CreateQueueCommand, GetQueueAttributesCommand, SetQueueAttributesCommand } from '@aws-sdk/client-sqs';
@@ -6,10 +6,17 @@ import { SQSClient, CreateQueueCommand, GetQueueAttributesCommand, SetQueueAttri
 const dynamo = new DynamoDBClient({ endpoint: process.env.DYNAMODB_ENDPOINT || 'http://localhost:8000', region: 'us-east-1', credentials: { accessKeyId: 'local', secretAccessKey: 'local' }, maxAttempts: 2 });
 for (const service of ['identity','portfolio','project','resource','budget','priority']) {
   const TableName = `cloudportfolio-${service}-local`;
-  try { await dynamo.send(new DescribeTableCommand({ TableName })); }
+  try {
+    const existing = await dynamo.send(new DescribeTableCommand({ TableName }));
+    if (service === 'identity' && !existing.Table.GlobalSecondaryIndexes?.some(index => index.IndexName === 'FlowDueIndex')) {
+      await dynamo.send(new UpdateTableCommand({ TableName, AttributeDefinitions: [{ AttributeName: 'gsi2pk', AttributeType: 'S' }, { AttributeName: 'gsi2sk', AttributeType: 'S' }], GlobalSecondaryIndexUpdates: [{ Create: { IndexName: 'FlowDueIndex', KeySchema: [{ AttributeName: 'gsi2pk', KeyType: 'HASH' }, { AttributeName: 'gsi2sk', KeyType: 'RANGE' }], Projection: { ProjectionType: 'ALL' } } }] }));
+      console.log(`Added FlowDueIndex to ${TableName}`);
+    }
+  }
   catch (error) {
     if (error.name !== 'ResourceNotFoundException') throw error;
-    await dynamo.send(new CreateTableCommand({ TableName, BillingMode: 'PAY_PER_REQUEST', AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }, { AttributeName: 'sk', AttributeType: 'S' }], KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }, { AttributeName: 'sk', KeyType: 'RANGE' }] }));
+    const flowIndex = service === 'identity' ? { AttributeDefinitions: [{ AttributeName: 'gsi2pk', AttributeType: 'S' }, { AttributeName: 'gsi2sk', AttributeType: 'S' }], GlobalSecondaryIndexes: [{ IndexName: 'FlowDueIndex', KeySchema: [{ AttributeName: 'gsi2pk', KeyType: 'HASH' }, { AttributeName: 'gsi2sk', KeyType: 'RANGE' }], Projection: { ProjectionType: 'ALL' } }] } : {};
+    await dynamo.send(new CreateTableCommand({ TableName, BillingMode: 'PAY_PER_REQUEST', AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }, { AttributeName: 'sk', AttributeType: 'S' }, ...(flowIndex.AttributeDefinitions || [])], KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }, { AttributeName: 'sk', KeyType: 'RANGE' }], ...(flowIndex.GlobalSecondaryIndexes ? { GlobalSecondaryIndexes: flowIndex.GlobalSecondaryIndexes } : {}) }));
     console.log(`Created ${TableName}`);
   }
 }

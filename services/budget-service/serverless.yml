@@ -1,5 +1,5 @@
 service: cloudportfolio-budget
-frameworkVersion: '4'
+frameworkVersion: '4.17.1'
 plugins:
   - serverless-python-requirements
 provider:

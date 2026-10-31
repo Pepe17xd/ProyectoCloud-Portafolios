@@ -1,5 +1,5 @@
 service: cloudportfolio-identity
-frameworkVersion: '4'
+frameworkVersion: '4.17.1'
 provider:
   name: aws
   runtime: nodejs20.x
@@ -9,6 +9,10 @@ provider:
     TABLE_NAME: cloudportfolio-identity-${sls:stage}
     REMINDER_TABLE_NAME: cloudportfolio-reminders-${sls:stage}
     PROJECT_API_URL: ${env:PROJECT_API_URL, ''}
+    PORTFOLIO_API_URL: ${env:PORTFOLIO_API_URL, ''}
+    BUDGET_API_URL: ${env:BUDGET_API_URL, ''}
+    RESOURCE_API_URL: ${env:RESOURCE_API_URL, ''}
+    PRIORITY_API_URL: ${env:PRIORITY_API_URL, ''}
     CORS_ORIGIN: ${env:CORS_ORIGIN, '*'}
     TOPIC_ARN: ${env:DOMAIN_TOPIC_ARN, ''}
     NOTIFICATION_MODE: ${env:NOTIFICATION_MODE, 'disabled'}
@@ -30,6 +34,7 @@ provider:
             - !GetAtt RecordsTable.Arn
             - !GetAtt RemindersTable.Arn
             - !Sub '${RemindersTable.Arn}/index/DueIndex'
+            - !Sub '${RecordsTable.Arn}/index/FlowDueIndex'
         - Effect: Allow
           Action: [sns:Publish]
           Resource: ${env:DOMAIN_TOPIC_ARN, 'arn:aws:sns:us-east-1:000000000000:placeholder'}
@@ -71,6 +76,11 @@ functions:
       - httpApi: {path: /reminders, method: GET, authorizer: cognito}
       - httpApi: {path: "/reminders/{id}", method: PATCH, authorizer: cognito}
       - httpApi: {path: "/reminders/{id}", method: DELETE, authorizer: cognito}
+      - httpApi: {path: /flows, method: GET, authorizer: cognito}
+      - httpApi: {path: /flows, method: POST, authorizer: cognito}
+      - httpApi: {path: "/flows/{id}", method: PATCH, authorizer: cognito}
+      - httpApi: {path: "/flows/{id}/run", method: POST, authorizer: cognito}
+      - httpApi: {path: "/flows/{id}/runs", method: GET, authorizer: cognito}
   reminderScheduler:
     handler: handler.scheduled
     timeout: 30
@@ -86,9 +96,17 @@ resources:
         AttributeDefinitions:
           - {AttributeName: pk, AttributeType: S}
           - {AttributeName: sk, AttributeType: S}
+          - {AttributeName: gsi2pk, AttributeType: S}
+          - {AttributeName: gsi2sk, AttributeType: S}
         KeySchema:
           - {AttributeName: pk, KeyType: HASH}
           - {AttributeName: sk, KeyType: RANGE}
+        GlobalSecondaryIndexes:
+          - IndexName: FlowDueIndex
+            KeySchema:
+              - {AttributeName: gsi2pk, KeyType: HASH}
+              - {AttributeName: gsi2sk, KeyType: RANGE}
+            Projection: {ProjectionType: ALL}
         PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
     RemindersTable:
       Type: AWS::DynamoDB::Table

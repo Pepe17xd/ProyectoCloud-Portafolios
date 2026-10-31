@@ -66,7 +66,7 @@ def actor(authorization: str | None = Header(None)):
         if unverified.get("iss") == "cloudportfolio-local":
             claims = jwt.decode(
                 token,
-                os.getenv("LOCAL_JWT_SECRET", "local-only"),
+                os.getenv("LOCAL_JWT_SECRET") or (_ for _ in ()).throw(ValueError("LOCAL_JWT_SECRET is required")),
                 algorithms=["HS256"],
                 issuer="cloudportfolio-local",
                 options={"require": ["exp", "iat", "iss", "sub"]},
@@ -88,7 +88,8 @@ def actor(authorization: str | None = Header(None)):
                 raise ValueError("Unexpected token audience")
         tenant = claims.get("tenantId") or claims.get("custom:tenantId")
         role = claims.get("role") or claims.get("custom:role")
-        if not tenant or role not in {"ADMIN", "MANAGER", "VIEWER"}:
+        service_ok = claims.get("service") == "profiles-flow" and claims.get("scopes") == ["domain:read"]
+        if not tenant or (role not in {"ADMIN", "MANAGER", "VIEWER"} and not (role == "SERVICE" and service_ok)):
             raise ValueError()
         return {"tenantId": tenant, "userId": claims["sub"], "role": role}
     except Exception:
@@ -114,6 +115,7 @@ def allowed(a, method="GET", identity_admin=False):
         "VIEWER": {"GET", "HEAD", "OPTIONS"},
         "MANAGER": {"GET", "HEAD", "OPTIONS", "POST", "PATCH"},
         "ADMIN": {"GET", "HEAD", "OPTIONS", "POST", "PATCH", "DELETE"},
+        "SERVICE": {"GET", "HEAD", "OPTIONS"},
     }
     if method not in matrix.get(a.get("role"), set()) or (identity_admin and method not in {"GET", "HEAD", "OPTIONS"} and a.get("role") != "ADMIN"):
         raise HTTPException(403, "Admin required" if method == "DELETE" and a.get("role") == "MANAGER" or identity_admin else "Insufficient role")

@@ -1,5 +1,5 @@
 service: cloudportfolio-priority
-frameworkVersion: '4'
+frameworkVersion: '4.17.1'
 plugins:
   - serverless-python-requirements
 provider:
@@ -13,6 +13,9 @@ provider:
     JWT_ISSUER: https://cognito-idp.${aws:region}.amazonaws.com/${env:COGNITO_USER_POOL_ID, 'local'}
     COGNITO_CLIENT_ID: ${env:COGNITO_CLIENT_ID, 'local'}
     PROJECT_API_URL: ${env:PROJECT_API_URL, ''}
+    PORTFOLIO_API_URL: ${env:PORTFOLIO_API_URL, ''}
+    RESOURCE_API_URL: ${env:RESOURCE_API_URL, ''}
+    BUDGET_API_URL: ${env:BUDGET_API_URL, ''}
   httpApi:
     cors: true
     authorizers:
@@ -43,6 +46,12 @@ functions:
       - httpApi: {path: "/priorities/{ident}", method: PATCH, authorizer: cognito}
       - httpApi: {path: "/priorities/{ident}", method: DELETE, authorizer: cognito}
       - httpApi: {path: /rankings, method: GET, authorizer: cognito}
+      - httpApi: {path: /decisions/context, method: GET, authorizer: cognito}
+      - httpApi: {path: /decisions/simulate, method: POST, authorizer: cognito}
+      - httpApi: {path: /decisions/scenarios, method: GET, authorizer: cognito}
+      - httpApi: {path: /decisions/scenarios, method: POST, authorizer: cognito}
+      - httpApi: {path: "/decisions/scenarios/{ident}", method: GET, authorizer: cognito}
+      - httpApi: {path: "/decisions/scenarios/{ident}", method: DELETE, authorizer: cognito}
 resources:
   Resources:
     RecordsTable:

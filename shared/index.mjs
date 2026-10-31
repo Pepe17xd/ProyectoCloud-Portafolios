@@ -16,7 +16,9 @@ export function claims(event) {
   const tenantId = c['custom:tenantId'] || c.tenantId;
   const userId = c.sub || c.userId;
   const role = c['custom:role'] || c.role;
-  if (!tenantId || !userId || !['ADMIN', 'MANAGER', 'VIEWER'].includes(role)) {
+  const localServiceRuntime = process.env.NODE_ENV !== 'production' && !process.env.AWS_LAMBDA_FUNCTION_NAME;
+  const serviceIdentity = localServiceRuntime && c.service === 'profiles-flow' && Array.isArray(c.scopes) && c.scopes.length === 1 && c.scopes[0] === 'domain:read';
+  if (!tenantId || !userId || (!['ADMIN', 'MANAGER', 'VIEWER'].includes(role) && !(role === 'SERVICE' && serviceIdentity))) {
     throw Object.assign(new Error('Invalid identity claims'), { status: 403 });
   }
   return { tenantId, userId, role };
@@ -51,6 +53,15 @@ export function signLocalToken({ userId, tenantId, role, email }, secret = proce
   return `${header}.${payload}.${createHmac('sha256', secret).update(`${header}.${payload}`).digest('base64url')}`;
 }
 
+export function signLocalServiceToken({ userId, tenantId, scopes = ['domain:read'] }, secret = process.env.LOCAL_JWT_SECRET, ttlSeconds = 300) {
+  if (process.env.NODE_ENV === 'production' || process.env.AWS_LAMBDA_FUNCTION_NAME) throw new Error('Local service identities cannot be issued in production or Lambda');
+  if (!secret || !userId || !tenantId || scopes.length !== 1 || scopes.some(scope => scope !== 'domain:read')) throw new Error('A valid local service identity and LOCAL_JWT_SECRET are required');
+  const now = Math.floor(Date.now() / 1000);
+  const header = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payload = b64url(JSON.stringify({ sub: userId, userId, tenantId, role: 'SERVICE', service: 'profiles-flow', scopes, iss: 'cloudportfolio-local', iat: now, exp: now + ttlSeconds }));
+  return `${header}.${payload}.${createHmac('sha256', secret).update(`${header}.${payload}`).digest('base64url')}`;
+}
+
 export const RBAC_MATRIX = Object.freeze({
   VIEWER: Object.freeze(['GET', 'HEAD', 'OPTIONS']),
   MANAGER: Object.freeze(['GET', 'HEAD', 'OPTIONS', 'POST', 'PATCH']),
@@ -59,6 +70,10 @@ export const RBAC_MATRIX = Object.freeze({
 
 /** Shared policy: reads are available to all; only ADMIN deletes or administers identity. */
 export function authorize(role, method, resource = '') {
+  if (role === 'SERVICE') {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(method) && resource !== 'users' && resource !== 'identityAdmin') return;
+    throw Object.assign(new Error('Service identity is read-only'), { status: 403 });
+  }
   if (!RBAC_MATRIX[role] || !RBAC_MATRIX[role].includes(method)) {
     throw Object.assign(new Error(method === 'DELETE' && role === 'MANAGER' ? 'Admin required' : 'Forbidden'), { status: 403 });
   }

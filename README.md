@@ -1,4 +1,4 @@
-# ASTRA — Project Portfolio Management
+# ProFiles — Project & Portfolio Management
 
 ASTRA es una plataforma SaaS académica para conectar portafolios, proyectos, recursos, presupuestos y prioridades. El repositorio conserva el nombre técnico `cloudportfolio` para mantener compatibilidad con workspaces, servicios y recursos existentes.
 
@@ -35,7 +35,7 @@ Estas cuentas son ficticias y solo para el adaptador local. Pasos, capacidades p
 - `/`: presentación pública ASTRA.
 - `/login`: autenticación local o Cognito configurado.
 - `/register`: crea una organización local aislada y su usuario ADMIN inicial cuando `VITE_AUTH_MODE=local`; AWS todavía requiere un flujo de aprovisionamiento con Cognito.
-- `/app` y `/app/portfolios`, `/app/projects`, `/app/resources`, `/app/budgets`, `/app/priorities`: consola protegida.
+- `/app` y `/app/portfolios`, `/app/projects`, `/app/resources`, `/app/budgets`, `/app/priorities`, `/app/decisions`: consola protegida.
 
 La vista previa de la landing está identificada como demostración y no consulta datos de tenants. El dashboard interno consume las APIs.
 
@@ -49,6 +49,18 @@ La landing usa una fotografía local de la Vía Láctea de ESO/F. Char con créd
 - Seis microservicios Node.js/Python con API Gateway/Lambda previstos para AWS.
 - DynamoDB por servicio, SNS/SQS, S3 y adaptadores locales.
 - AWS Amplify como destino previsto del frontend.
+
+## AWS Academy
+
+El preflight de solo lectura y el despliegue explícito están disponibles como `npm run deploy:academy:check`, `npm run deploy:academy` y `npm run deploy:academy:verify`. No se han desplegado recursos. Consulta [la guía AWS Academy](docs/AWS_ACADEMY.md) para credenciales temporales, límites IAM/CloudFormation, Amplify y la carga académica separada.
+
+## ProFiles Flow
+
+El dashboard incluye automatizaciones deterministas y notificaciones simuladas. `npm run dev:local` inicia también el scheduler local con identidad de servicio efímera. Consulta [docs/PROFILES_FLOW.md](docs/PROFILES_FLOW.md) para endpoints, recuperación y límites de planificación AWS.
+
+## Decision Lab
+
+La sección Decisiones compara, de forma determinista y sin modificar datos operativos, el presupuesto, las prioridades, las asignaciones y las fechas planificadas del tenant. Las simulaciones indican datos no calculables y no predicen resultados futuros. Consulta [docs/DECISION_LAB.md](docs/DECISION_LAB.md) para fórmulas y contratos API.
 
 ## Verificaciones
 
