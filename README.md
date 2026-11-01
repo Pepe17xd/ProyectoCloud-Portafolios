@@ -77,3 +77,5 @@ Las imágenes históricas `frontend/public/milky-way-source.jpg`, `frontend/publ
 ## Licencia
 
 Este proyecto se distribuye bajo la [licencia MIT](LICENSE). Copyright (c) 2026 CloudComputin-utec2026-02. Las marcas y activos de terceros conservan sus condiciones correspondientes.
+
+La mascota Foli y sus variantes de marca se documentan en [docs/BRAND_ASSETS.md](docs/BRAND_ASSETS.md), incluida su procedencia y el uso del isotipo SVG como fallback.

@@ -45,6 +45,24 @@ test('unauthenticated visitor is sent to sign in', async ({ browser }) => {
   await page.goto('/app'); await expect(page).toHaveURL(/\/login$/); await expect(page.getByRole('heading', { name: /Inicia sesi/ })).toBeVisible(); await context.close();
 });
 
+test('registration screen remains clear and styled on desktop and mobile', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  await page.goto('/register');
+  await expect(page.getByRole('heading', { name: 'Crea tu organización' })).toBeVisible();
+  await expect(page.getByLabel('Nombre de la organización')).toBeVisible();
+  await expect(page.getByLabel('Tu nombre')).toBeVisible();
+  await expect(page.locator('.auth-mobile-brand .brand-mark-image')).toHaveJSProperty('naturalWidth', 768);
+  await expect(page.getByText(/Entre 12 y 128 caracteres/i)).toBeVisible();
+  await expect(page.locator('.auth-card .auth-submit')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
+  await page.screenshot({ path: test.info().outputPath('registro-movil.png'), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(page.getByRole('heading', { name: 'Crea tu organización' })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('registro-escritorio.png'), fullPage: true });
+  await context.close();
+});
+
 for (const [label, viewport] of [['escritorio', { width: 1440, height: 900 }], ['movil', { width: 390, height: 844 }]] as const) {
   test(`landing, dashboard and WhatsApp states at ${label}`, async ({ page, browser }) => {
     const publicContext = await browser.newContext({ viewport });
@@ -52,6 +70,18 @@ for (const [label, viewport] of [['escritorio', { width: 1440, height: 900 }], [
     await publicPage.goto('/');
     await expect(publicPage.getByRole('link', { name: /crear una organización/i })).toBeVisible();
     await publicPage.screenshot({ path: test.info().outputPath(`landing-${label}.png`), fullPage: true });
+    if (viewport.width < 980) {
+      const menu = publicPage.locator('.landing-menu-toggle');
+      await menu.click(); await expect(menu).toHaveAttribute('aria-expanded', 'true');
+    }
+    await publicPage.getByRole('link', { name: 'Quiénes somos' }).click();
+    await expect(publicPage).toHaveURL(/#equipo$/);
+    await expect(publicPage.getByText('CloudComputin-utec2026-02')).toBeVisible();
+    await expect(publicPage.locator('.landing-foli')).toHaveJSProperty('naturalWidth', 768);
+    if (viewport.width < 980) await publicPage.locator('.landing-menu-toggle').click();
+    await publicPage.getByRole('link', { name: 'Organizaciones' }).click();
+    await expect(publicPage).toHaveURL(/#organizaciones$/);
+    await expect(publicPage.getByRole('heading', { name: /Cada equipo trabaja desde su propio espacio/i })).toBeVisible();
     await publicContext.close();
     await page.setViewportSize(viewport);
     await page.route('**/mock-api/identity/notifications/**', route => {

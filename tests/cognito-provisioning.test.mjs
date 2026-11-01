@@ -46,6 +46,6 @@ test('deployment protects endpoint and Cognito sensitive attributes', () => {
 test('frontend registration uses confirmation, refresh and only the organization name', () => {
   const page = readFileSync(new URL('../frontend/src/features/auth/AuthPage.tsx', import.meta.url), 'utf8');
   const client = readFileSync(new URL('../frontend/src/auth/cognito.ts', import.meta.url), 'utf8');
-  assert.match(page, /await registerCognito\(/); assert.match(page, /await confirmCognito\(/); assert.match(page, /await resendCognito\(/); assert.match(page, /await provisionCognito\(/);
+  assert.match(page, /await registerCognito\(/); assert.match(page, /confirm: confirmCognito/); assert.match(page, /await resendCognito\(/); assert.match(page, /provision: provisionCognito/);
   assert.match(client, /JSON\.stringify\(\{ organizationName \}\)/); assert.match(client, /forceRefresh: true/); assert.doesNotMatch(client, /custom:role.*userAttributes/);
 });

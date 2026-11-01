@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { ArrowRight, Bell, Check, ClipboardList, FolderKanban, Layers, Users } from 'lucide-react';
-import { Brand } from '../../components/Brand';
+import { ArrowRight, Building2, Check, ClipboardList, FolderKanban, HeartHandshake, Layers, LockKeyhole, ShieldCheck, Users } from 'lucide-react';
+import { Brand, BrandIcon, FoliMascot } from '../../components/Brand';
 import './Landing.css';
+import './landing-identity.css';
 
 const steps = [
   { number: '01', title: 'Centraliza proyectos', text: 'Relaciona portafolios, proyectos, tareas, personas y presupuestos en un espacio de trabajo.' },
@@ -40,6 +41,17 @@ function WorkspacePreview() {
   </div>;
 }
 
+function TeamIllustration() {
+  return <div className="landing-team-art" aria-label="Ilustración de una carpeta que reúne proyectos y personas" role="img">
+    <div className="landing-art-halo"/>
+    <div className="landing-art-folder"><BrandIcon large/><span>Un espacio para avanzar</span></div>
+    <div className="landing-art-note note-lavender"><FolderKanban size={17}/><span>Proyectos</span></div>
+    <div className="landing-art-note note-coral"><Users size={17}/><span>Personas</span></div>
+    <div className="landing-art-note note-cream"><ShieldCheck size={17}/><span>Permisos</span></div>
+    <FoliMascot variant="illustration" className="landing-foli" alt="Foli, la mascota de ProFiles"/>
+  </div>;
+}
+
 export default function Landing() {
   const [menuOpen, setMenuOpen] = useState(false);
   const closeMenu = () => setMenuOpen(false);
@@ -52,7 +64,7 @@ export default function Landing() {
           <span/><span/>
         </button>
         <nav id="landing-navigation" className={menuOpen ? 'landing-nav is-open' : 'landing-nav'} aria-label="Navegación principal">
-          <a href="#plataforma" onClick={closeMenu}>Plataforma</a><a href="#flujo" onClick={closeMenu}>Cómo ayuda</a>
+          <a href="#plataforma" onClick={closeMenu}>Plataforma</a><a href="#flujo" onClick={closeMenu}>Cómo funciona</a><a href="#equipo" onClick={closeMenu}>Quiénes somos</a><a href="#organizaciones" onClick={closeMenu}>Organizaciones</a>
           <div className="landing-nav-actions"><a className="landing-login" href="/login">Iniciar sesión</a><a className="landing-button primary" href="/register">Crear espacio <ArrowRight size={16}/></a></div>
         </nav>
       </div>
@@ -60,11 +72,11 @@ export default function Landing() {
 
     <main>
       <section className="landing-hero" aria-labelledby="landing-title">
-        <div className="landing-hero-copy"><span className="landing-kicker">ProFiles — PROJECT &amp; PORTFOLIO MANAGEMENT</span>
+        <div className="landing-hero-copy"><div className="landing-hero-brand"><BrandIcon large/><span><b>ProFiles</b><small>Proyectos y portafolios, en un mismo lugar</small></span></div><span className="landing-kicker">GESTIÓN CLARA PARA EL TRABAJO EN EQUIPO</span>
           <h1 id="landing-title">Organiza.<br/><span>Decide. Avanza.</span></h1>
           <p>Conecta proyectos, equipos y presupuestos. Identifica qué necesita atención y evalúa alternativas con información de tu organización.</p>
           <div className="landing-hero-actions"><a className="landing-button primary" href="/register">Crear una organización <ArrowRight size={17}/></a><a className="landing-text-link" href="#flujo">Conocer la plataforma</a></div>
-          <div className="landing-trust"><span><Check size={15}/> Datos del tenant autenticado</span><span><Check size={15}/> Escenarios sin cambios operativos</span></div>
+          <div className="landing-trust"><span><Check size={15}/> Cada equipo con su propio espacio</span><span><Check size={15}/> Escenarios para revisar antes de decidir</span></div>
         </div>
         <div className="landing-hero-visual"><PortfolioIllustration/><WorkspacePreview/></div>
       </section>
@@ -76,10 +88,30 @@ export default function Landing() {
 
       <section className="landing-capabilities" id="plataforma" aria-labelledby="capabilities-title">
         <div><span className="landing-kicker">UN ESPACIO DE TRABAJO</span><h2 id="capabilities-title">Contexto para cada equipo.</h2></div>
-        <ul><li><FolderKanban size={18}/><span><b>Proyectos y portafolios</b><small>Organiza trabajo, fechas y estados por tenant.</small></span></li><li><Users size={18}/><span><b>Recursos y presupuestos</b><small>Consulta asignaciones, capacidad y registros financieros disponibles.</small></span></li><li><ClipboardList size={18}/><span><b>Flow y reportes</b><small>Programa seguimiento y revisa resultados con trazabilidad.</small></span></li><li><Layers size={18}/><span><b>Decision Lab</b><small>Compara escenarios explicables antes de una revisión humana.</small></span></li></ul>
+        <ul><li><FolderKanban size={18}/><span><b>Proyectos y portafolios</b><small>Organiza iniciativas, tareas, fechas y estados.</small></span></li><li><Users size={18}/><span><b>Personas y recursos</b><small>Consulta responsables, asignaciones y capacidad disponible.</small></span></li><li><ClipboardList size={18}/><span><b>Seguimiento y reportes</b><small>Revisa pendientes, avisos y resultados registrados.</small></span></li><li><Layers size={18}/><span><b>Decision Lab</b><small>Explora escenarios explicables antes de una revisión humana.</small></span></li></ul>
+      </section>
+
+      <section className="landing-about" id="equipo" aria-labelledby="about-title">
+        <div className="landing-about-copy"><span className="landing-kicker">QUIÉNES SOMOS</span><p className="landing-team-name">CloudComputin-utec2026-02</p><h2 id="about-title">Software abierto para organizar el trabajo que importa.</h2><p>Somos el equipo que desarrolla ProFiles como una herramienta de software libre para facilitar la gestión de portafolios y proyectos en organizaciones distintas.</p><p>Lo creamos para reunir planes, personas y seguimiento en una experiencia comprensible. Buscamos que el software abierto sea accesible, reutilizable y adaptable a las necesidades de cada equipo.</p><a className="landing-about-link" href="#proposito">Conoce qué buscamos <ArrowRight size={16}/></a></div>
+        <TeamIllustration/>
+      </section>
+
+      <section className="landing-organizations" id="organizaciones" aria-labelledby="org-title">
+        <div className="landing-org-heading"><span className="landing-kicker">UN ESPACIO PARA CADA ORGANIZACIÓN</span><h2 id="org-title">Cada equipo trabaja desde su propio espacio.</h2><p>ProFiles organiza los proyectos y recursos por organización para que cada equipo tenga contexto y acceso según la función de sus integrantes.</p></div>
+        <div className="landing-org-points">
+          <article><span className="org-icon icon-blue"><Building2 size={20}/></span><div><h3>Un espacio de trabajo propio</h3><p>La información de una organización se administra dentro de su espacio.</p></div></article>
+          <article><span className="org-icon icon-lavender"><LockKeyhole size={20}/></span><div><h3>Acceso según la función</h3><p>Los permisos de cada persona determinan las acciones disponibles.</p></div></article>
+          <article><span className="org-icon icon-coral"><FolderKanban size={20}/></span><div><h3>Proyectos y recursos vinculados</h3><p>El trabajo y las asignaciones se relacionan con la organización correspondiente.</p></div></article>
+        </div>
+        <p className="landing-org-note"><ShieldCheck size={15}/> ProFiles está diseñado para separar espacios por organización. La seguridad efectiva también depende de la configuración y validación de cada despliegue.</p>
+      </section>
+
+      <section className="landing-purpose" id="proposito" aria-labelledby="purpose-title">
+        <div className="landing-section-heading"><span className="landing-kicker">QUÉ BUSCAMOS</span><h2 id="purpose-title">Más claridad para decidir<br/><span>y avanzar en equipo.</span></h2><p>Queremos que los equipos puedan ver qué se está haciendo, quién participa y qué necesita atención, usando una plataforma abierta que puedan adaptar.</p></div>
+        <div className="landing-purpose-values"><span><HeartHandshake size={18}/> Accesible para equipos distintos</span><span><Layers size={18}/> Reutilizable y abierto</span><span><ShieldCheck size={18}/> Contexto con permisos</span></div>
       </section>
     </main>
 
-    <footer className="landing-footer"><Brand/><span>Project &amp; Portfolio Management</span>{github && /^https:\/\/github\.com\//i.test(github) && <a href={github}>Repositorio en GitHub</a>}<a href="/login">Acceder a ProFiles <ArrowRight size={14}/></a></footer>
+    <footer className="landing-footer"><Brand/><span>Software libre · Licencia MIT</span><a className="landing-repository" href={github && /^https:\/\/github\.com\//i.test(github) ? github : 'https://github.com/Pepe17xd/ProyectoCloud-Portafolios'} target="_blank" rel="noreferrer">Explorar en GitHub <ArrowRight size={14}/></a><a href="/login">Acceder a ProFiles <ArrowRight size={14}/></a></footer>
   </div>;
 }

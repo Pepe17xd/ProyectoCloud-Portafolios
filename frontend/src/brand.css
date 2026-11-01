@@ -1,0 +1,11 @@
+.brand-symbol { position:relative; display:inline-grid; place-items:center; width:32px; height:32px; flex:none; }
+.brand-symbol-large { width:48px; height:48px; }
+.brand-symbol .brand-mark { position:absolute; inset:0; display:block; width:100%; height:100%; overflow:visible; transform:none; animation:none!important; filter:drop-shadow(0 4px 5px #18385d20); }
+.brand-symbol .brand-mark-image,.brand-symbol .brand-mascot-image { position:absolute; z-index:1; inset:0; display:block; width:100%; height:100%; object-fit:contain; }
+.brand-symbol .brand-mark-image { filter:drop-shadow(0 4px 5px #18385d20); }
+.brand-symbol .brand-mascot-image { pointer-events:none; }
+.brand-folder-back { fill:#8ac9f5; }
+.brand-folder-front { fill:#386cb2; }
+.brand-folder-accent { fill:#ffad9d; }
+.profiles-foli { display:block; width:100%; height:auto; object-fit:contain; }
+@media(prefers-reduced-motion:reduce) { .brand-symbol .brand-mark { animation:none!important; } }

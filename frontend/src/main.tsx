@@ -7,6 +7,7 @@ import { Brand } from './components/Brand';
 import { navigate, usePathname } from './hooks/navigation';
 import './style.css';
 import './profiles-design.css';
+import './brand.css';
 
 const Landing = lazy(() => import('./features/landing/Landing'));
 const AuthPage = lazy(() => import('./features/auth/AuthPage'));
