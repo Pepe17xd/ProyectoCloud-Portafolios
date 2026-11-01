@@ -1,11 +1,21 @@
 service: cloudportfolio-identity
 frameworkVersion: '4.17.1'
+build:
+  esbuild:
+    bundle: true
+    minify: false
+    sourcemap: false
+package:
+  patterns:
+    - '!**/.env'
+    - '!**/.env.*'
 provider:
   name: aws
   runtime: nodejs20.x
   region: ${opt:region, 'us-east-1'}
   stage: ${opt:stage, 'dev'}
   environment:
+    COGNITO_USER_POOL_ID: ${env:COGNITO_USER_POOL_ID}
     TABLE_NAME: cloudportfolio-identity-${sls:stage}
     REMINDER_TABLE_NAME: cloudportfolio-reminders-${sls:stage}
     PROJECT_API_URL: ${env:PROJECT_API_URL, ''}
@@ -16,6 +26,9 @@ provider:
     CORS_ORIGIN: ${env:CORS_ORIGIN, '*'}
     TOPIC_ARN: ${env:DOMAIN_TOPIC_ARN, ''}
     NOTIFICATION_MODE: ${env:NOTIFICATION_MODE, 'disabled'}
+    WHATSAPP_QUEUE_URL: ${env:WHATSAPP_QUEUE_URL, ''}
+    WHATSAPP_QUEUE_ARN: ${env:WHATSAPP_QUEUE_ARN, ''}
+    WHATSAPP_META_SECRET_ARN: ${env:WHATSAPP_META_SECRET_ARN, ''}
   httpApi:
     cors: true
     authorizers:
@@ -29,25 +42,31 @@ provider:
     role:
       statements:
         - Effect: Allow
-          Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query]
+          Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query, dynamodb:TransactWriteItems]
           Resource:
             - !GetAtt RecordsTable.Arn
             - !GetAtt RemindersTable.Arn
             - !Sub '${RemindersTable.Arn}/index/DueIndex'
             - !Sub '${RecordsTable.Arn}/index/FlowDueIndex'
         - Effect: Allow
+          Action: [cognito-idp:AdminGetUser, cognito-idp:AdminUpdateUserAttributes]
+          Resource: arn:aws:cognito-idp:${aws:region}:${aws:accountId}:userpool/${env:COGNITO_USER_POOL_ID}
+        - Effect: Allow
           Action: [sns:Publish]
           Resource: ${env:DOMAIN_TOPIC_ARN, 'arn:aws:sns:us-east-1:000000000000:placeholder'}
+        - Effect: Allow
+          Action: [sqs:SendMessage, sqs:ReceiveMessage, sqs:DeleteMessage, sqs:ChangeMessageVisibility, sqs:GetQueueAttributes]
+          Resource: ${env:WHATSAPP_QUEUE_ARN, 'arn:aws:sqs:us-east-1:000000000000:placeholder'}
+        - Effect: Allow
+          Action: [secretsmanager:GetSecretValue]
+          Resource: ${env:WHATSAPP_META_SECRET_ARN, 'arn:aws:secretsmanager:${aws:region}:${aws:accountId}:secret:profiles-whatsapp-*'}
 functions:
-  # /auth/register is intentionally not an AWS route. Local organization signup
-  # uses scripts/local-api.mjs only. AWS signup requires Cognito SignUp with
-  # verified email plus an idempotent PostConfirmation provisioning Lambda for
-  # tenant/profile/membership rows; role assignment must be server-side. Do not
-  # expose the local JWT adapter or accept tenant/role claims from the browser.
+  # Cognito confirms email; the JWT-protected endpoint completes provisioning.
   api:
     handler: handler.api
     timeout: 20
     events:
+      - httpApi: {path: /auth/provision, method: POST, authorizer: cognito}
       - httpApi: {path: /users, method: GET, authorizer: cognito}
       - httpApi: {path: /users, method: POST, authorizer: cognito}
       - httpApi: {path: "/users/{id}", method: GET, authorizer: cognito}
@@ -66,10 +85,14 @@ functions:
       - httpApi: {path: /notifications/preferences, method: GET, authorizer: cognito}
       - httpApi: {path: /notifications/preferences, method: PUT, authorizer: cognito}
       - httpApi: {path: /notifications/inbox, method: GET, authorizer: cognito}
+      - httpApi: {path: /notifications/whatsapp, method: GET, authorizer: cognito}
+      - httpApi: {path: /notifications/whatsapp/preferences, method: PUT, authorizer: cognito}
       - httpApi: {path: /notifications/verification-inbox, method: GET, authorizer: cognito}
       - httpApi: {path: /notifications/whatsapp/verification, method: POST, authorizer: cognito}
       - httpApi: {path: /notifications/whatsapp/confirm, method: POST, authorizer: cognito}
       - httpApi: {path: /notifications/whatsapp/number, method: DELETE, authorizer: cognito}
+      - httpApi: {path: /webhooks/meta/whatsapp, method: GET}
+      - httpApi: {path: /webhooks/meta/whatsapp, method: POST}
       - httpApi: {path: /intelligence/proposals, method: POST, authorizer: cognito}
       - httpApi: {path: /intelligence/actions, method: GET, authorizer: cognito}
       - httpApi: {path: "/intelligence/actions/{id}/confirm", method: POST, authorizer: cognito}
@@ -86,6 +109,15 @@ functions:
     timeout: 30
     events:
       - schedule: rate(1 minute)
+  whatsappConsumer:
+    handler: handler.whatsappConsumer
+    timeout: 30
+    events:
+      - sqs:
+          arn: ${env:WHATSAPP_QUEUE_ARN}
+          batchSize: 5
+          maximumBatchingWindow: 5
+          functionResponseType: ReportBatchItemFailures
 resources:
   Resources:
     RecordsTable:
@@ -98,6 +130,8 @@ resources:
           - {AttributeName: sk, AttributeType: S}
           - {AttributeName: gsi2pk, AttributeType: S}
           - {AttributeName: gsi2sk, AttributeType: S}
+          - {AttributeName: gsi3pk, AttributeType: S}
+          - {AttributeName: gsi3sk, AttributeType: S}
         KeySchema:
           - {AttributeName: pk, KeyType: HASH}
           - {AttributeName: sk, KeyType: RANGE}
@@ -107,7 +141,15 @@ resources:
               - {AttributeName: gsi2pk, KeyType: HASH}
               - {AttributeName: gsi2sk, KeyType: RANGE}
             Projection: {ProjectionType: ALL}
+          - IndexName: WhatsAppNumberIndex
+            KeySchema:
+              - {AttributeName: gsi3pk, KeyType: HASH}
+              - {AttributeName: gsi3sk, KeyType: RANGE}
+            Projection: {ProjectionType: ALL}
         PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+        TimeToLiveSpecification:
+          AttributeName: expiresAt
+          Enabled: true
     RemindersTable:
       Type: AWS::DynamoDB::Table
       Properties:

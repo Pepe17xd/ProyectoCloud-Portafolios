@@ -1,5 +1,9 @@
 service: cloudportfolio-events
 frameworkVersion: '4.17.1'
+package:
+  patterns:
+    - '!**/.env'
+    - '!**/.env.*'
 provider:
   name: aws
   region: ${opt:region, 'us-east-1'}
@@ -22,6 +26,22 @@ resources:
         RedrivePolicy:
           deadLetterTargetArn: !GetAtt DomainDLQ.Arn
           maxReceiveCount: 4
+    WhatsAppDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: cloudportfolio-whatsapp-dlq-${sls:stage}
+        MessageRetentionPeriod: 1209600
+        SqsManagedSseEnabled: true
+    WhatsAppQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: cloudportfolio-whatsapp-${sls:stage}
+        VisibilityTimeout: 180
+        MessageRetentionPeriod: 1209600
+        SqsManagedSseEnabled: true
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt WhatsAppDLQ.Arn
+          maxReceiveCount: 5
     BudgetQueuePolicy:
       Type: AWS::SQS::QueuePolicy
       Properties:
@@ -46,3 +66,6 @@ resources:
   Outputs:
     DomainTopicArn: {Value: !Ref DomainTopic}
     BudgetQueueArn: {Value: !GetAtt BudgetQueue.Arn}
+    WhatsAppQueueArn: {Value: !GetAtt WhatsAppQueue.Arn}
+    WhatsAppQueueUrl: {Value: !Ref WhatsAppQueue}
+    WhatsAppDLQArn: {Value: !GetAtt WhatsAppDLQ.Arn}

@@ -192,7 +192,7 @@ test('landing, navegación pública, auth, asistente y notificaciones locales', 
 
   const prefs = await apiCall(page, `${apiIdentity}/notifications/preferences`, 'PUT', token, { enabled: true, timezone: 'America/Lima', allowedHours: { start: '00:00', end: '23:59' }, frequency: 'immediate', alertTypes: ['ProjectCreated'] });
   expect(prefs.ok()).toBeTruthy();
-  const start = await apiCall(page, `${apiIdentity}/notifications/whatsapp/verification`, 'POST', token, { phoneNumber: '+15555550123', consent: true });
+  const start = await apiCall(page, `${apiIdentity}/notifications/whatsapp/verification`, 'POST', token, { phoneNumber: '+15555550123', consent: true, consentVersion: 'profiles-whatsapp-2026-01' });
   expect(start.status()).toBe(202);
   expect((await start.json()).message).toMatch(/no se envió a WhatsApp/i);
   const localCode = await apiCall(page, `${apiIdentity}/notifications/verification-inbox`, 'GET', token);

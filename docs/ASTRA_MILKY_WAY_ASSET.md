@@ -6,6 +6,6 @@ La fotografía del fondo público procede de ESO, **“Majestic Milky Way”**, 
 - Licencia indicada por ESO: <https://www.eso.org/public/outreach/copyright/> — Creative Commons Attribution 4.0 International (CC BY 4.0).
 - Texto de licencia: <https://creativecommons.org/licenses/by/4.0/>.
 
-ASTRA conserva el crédito visible en el pie de la landing. La imagen descargada se comprimió a WebP para la entrega optimizada; el original JPEG se conserva como fallback local. No se solicita la imagen desde una URL remota durante la ejecución. ASTRA es un proyecto independiente y no está patrocinado ni respaldado por ESO.
+Esta documentación describe un diseño histórico de ASTRA. La landing actual de ProFiles no muestra esta fotografía ni su crédito: cualquier reutilización debe añadir el crédito visible **ESO/F. Char**. La imagen descargada se comprimió a WebP y la captura histórica la integra como fondo. ProFiles es independiente y no está patrocinado ni respaldado por ESO.
 
-Archivos: `frontend/public/milky-way.webp` y `frontend/public/milky-way-source.jpg`.
+Archivos: `frontend/public/milky-way.webp`, `frontend/public/milky-way-source.jpg` y `docs/ASTRA_MILKY_WAY_SCREENSHOT.png`.

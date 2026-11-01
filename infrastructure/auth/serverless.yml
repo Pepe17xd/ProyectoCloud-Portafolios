@@ -1,5 +1,9 @@
 service: cloudportfolio-auth
 frameworkVersion: '4.17.1'
+package:
+  patterns:
+    - '!**/.env'
+    - '!**/.env.*'
 provider:
   name: aws
   region: ${opt:region, 'us-east-1'}
@@ -34,6 +38,8 @@ resources:
         ClientName: cloudportfolio-web
         GenerateSecret: false
         ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+        ReadAttributes: [email, email_verified, name, "custom:tenantId", "custom:role"]
+        WriteAttributes: [email, name]
         PreventUserExistenceErrors: ENABLED
   Outputs:
     UserPoolId:

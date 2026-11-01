@@ -33,8 +33,7 @@ ddb = boto3.resource(
     "dynamodb",
     endpoint_url=os.getenv("DYNAMODB_ENDPOINT"),
     region_name=os.getenv("AWS_REGION", "us-east-1"),
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "local"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "local"),
+    **({"aws_access_key_id": "local", "aws_secret_access_key": "local"} if os.getenv("DYNAMODB_ENDPOINT") and not os.getenv("AWS_LAMBDA_FUNCTION_NAME") else {}),
 )
 table = ddb.Table(os.getenv("TABLE_NAME", "cloudportfolio-resource-local"))
 now = lambda: datetime.now(UTC).isoformat()
@@ -64,6 +63,8 @@ def actor(authorization: str | None = Header(None)):
         token = authorization[7:]
         unverified = jwt.decode(token, options={"verify_signature": False})
         if unverified.get("iss") == "cloudportfolio-local":
+            if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+                raise ValueError("Local tokens are not accepted in Lambda")
             claims = jwt.decode(
                 token,
                 os.getenv("LOCAL_JWT_SECRET") or (_ for _ in ()).throw(ValueError("LOCAL_JWT_SECRET is required")),
@@ -75,17 +76,20 @@ def actor(authorization: str | None = Header(None)):
             issuer = os.getenv("JWT_ISSUER", "")
             if not issuer:
                 raise ValueError("JWT_ISSUER is not configured")
+            client_id = os.getenv("COGNITO_CLIENT_ID")
+            if not client_id:
+                raise ValueError("COGNITO_CLIENT_ID is required")
             public_key = jwt.PyJWKClient(f"{issuer}/.well-known/jwks.json").get_signing_key_from_jwt(token).key
             claims = jwt.decode(
                 token,
                 public_key,
                 algorithms=["RS256"],
                 issuer=issuer,
-                options={"require": ["exp", "iss", "sub"], "verify_aud": False},
+                audience=client_id,
+                options={"require": ["exp", "iss", "sub", "aud", "token_use"]},
             )
-            client_id = os.getenv("COGNITO_CLIENT_ID")
-            if client_id and claims.get("client_id", claims.get("aud")) != client_id:
-                raise ValueError("Unexpected token audience")
+            if claims.get("token_use") != "id":
+                raise ValueError("ID token required")
         tenant = claims.get("tenantId") or claims.get("custom:tenantId")
         role = claims.get("role") or claims.get("custom:role")
         service_ok = claims.get("service") == "profiles-flow" and claims.get("scopes") == ["domain:read"]
@@ -308,8 +312,7 @@ def assign(body: AssignmentIn, authorization: str | None = Header(None), a=__imp
             "sns",
             endpoint_url=os.getenv("SNS_ENDPOINT"),
             region_name=os.getenv("AWS_REGION", "us-east-1"),
-            aws_access_key_id="local",
-            aws_secret_access_key="local",
+            **({"aws_access_key_id": "local", "aws_secret_access_key": "local"} if os.getenv("SNS_ENDPOINT") and not os.getenv("AWS_LAMBDA_FUNCTION_NAME") else {}),
         ).publish(
             TopicArn=os.environ["DOMAIN_TOPIC_ARN"],
             Message=json.dumps(

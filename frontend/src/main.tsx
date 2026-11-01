@@ -2,10 +2,11 @@ import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ArrowRight } from 'lucide-react';
 import { localAuth } from './api/client';
-import { getCurrentCognitoUser } from './auth/cognito';
+import { getCurrentCognitoUser, cognitoHasOrganization } from './auth/cognito';
 import { Brand } from './components/Brand';
 import { navigate, usePathname } from './hooks/navigation';
 import './style.css';
+import './profiles-design.css';
 
 const Landing = lazy(() => import('./features/landing/Landing'));
 const AuthPage = lazy(() => import('./features/auth/AuthPage'));
@@ -16,7 +17,8 @@ function RouteLoading({ label = 'Cargando ProFiles…' }: { label?: string }) {
 }
 
 function App() {
-  const pathname = usePathname();
+  const rawPathname = usePathname();
+  const pathname = rawPathname.replace(/\/+$/, '') || '/';
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const protectedRoute = pathname === '/app' || pathname.startsWith('/app/');
   const authRoute = pathname === '/login' || pathname === '/register';
@@ -31,7 +33,7 @@ function App() {
         if (active) setAuthenticated(valid);
         return;
       }
-      try { await getCurrentCognitoUser(); if (active) setAuthenticated(true); }
+      try { await getCurrentCognitoUser(); const ready = await cognitoHasOrganization(); if (active) setAuthenticated(ready); }
       catch { if (active) setAuthenticated(false); }
     };
     void check();

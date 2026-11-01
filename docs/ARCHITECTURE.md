@@ -2,7 +2,7 @@
 
 ## Estado y alcance
 
-Este documento describe el estado del repositorio auditado y un destino arquitectónico propuesto para el MVP. No se debe interpretar el diseño objetivo como funcionalidad ya desplegada. El checkout contiene seis servicios desplegables Serverless, pero cada uno usa actualmente un handler JavaScript con lógica CRUD casi idéntica y runtime Node.js 20; `resource`, `budget` y `priority` todavía no son servicios Python.
+Este documento describe el diseño y el estado del repositorio. Identity, Portfolio y Project usan Node.js; Resource, Budget y Priority usan Python, FastAPI y Mangum. El diseño no debe interpretarse como una validación de despliegue AWS.
 
 ## Componentes observados
 
@@ -12,7 +12,7 @@ Este documento describe el estado del repositorio auditado y un destino arquitec
 - Cognito User Pool en `infrastructure/auth`; cada HTTP API declara JWT authorizer.
 - SNS, SQS, DLQ y suscripción filtrada `ProjectCreated` en `infrastructure/events`.
 - Bucket S3 privado con bloqueo de acceso público y cifrado en `infrastructure/storage`; no se encontró API de documentos.
-- No se encontró configuración Docker Compose, DynamoDB Local, LocalStack ni proveedor OIDC local.
+- Docker Compose proporciona DynamoDB Local y LocalStack. La identidad local es un adaptador propio y no un proveedor OIDC.
 
 ## Cambios de esta implementación local
 
@@ -20,7 +20,7 @@ Este documento describe el estado del repositorio auditado y un destino arquitec
 - `scripts/init-local.mjs` crea seis tablas y provisiona bucket privado, SNS, seis colas y DLQ. `scripts/dev-local.mjs` inicia los seis adaptadores HTTP, un worker SQS y Vite.
 - Identity local emite JWT HS256 firmados, con emisor y expiración; cada API valida firma, tenant, subject y rol. Este adaptador no es OIDC ni JWKS.
 - Project Service firma URLs de upload/download S3 y persiste metadatos en su tabla. El S3 runtime aún no se validó.
-- Los servicios Resource, Budget y Priority siguen implementados en Node.js; la arquitectura Python solicitada queda pendiente.
+- Resource, Budget y Priority están implementados en Python; su empaquetado y despliegue completo en un laboratorio AWS nuevo requieren validación real.
 
 ## Vista de contexto objetivo
 

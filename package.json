@@ -2,6 +2,7 @@
   "name": "cloudportfolio",
   "private": true,
   "version": "1.0.0",
+  "license": "MIT",
   "workspaces": [
     "shared",
     "frontend",
@@ -13,8 +14,10 @@
     "test:all": "node --test tests/*.test.mjs",
     "test:e2e": "playwright test",
     "test:flow:integration": "node scripts/test-flow-integration.mjs",
+    "test:whatsapp:integration": "node scripts/test-whatsapp-integration.mjs",
     "dev:local": "node scripts/dev-local.mjs",
     "flows:scheduler": "node scripts/flow-scheduler.mjs",
+    "whatsapp:consumer:local": "node scripts/whatsapp-consumer-local.mjs",
     "seed:demo": "node scripts/seed-local.mjs demo",
     "seed:full": "node scripts/seed-large-aws.mjs",
     "deploy:academy:check": "node scripts/deploy-academy.mjs check",
@@ -28,7 +31,9 @@
   },
   "devDependencies": {
     "@faker-js/faker": "^10.6.0",
-    "@playwright/test": "^1.64.1"
+    "@playwright/test": "^1.64.1",
+    "serverless": "4.17.1",
+    "serverless-python-requirements": "6.1.2"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.800.0",

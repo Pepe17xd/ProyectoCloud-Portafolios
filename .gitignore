@@ -27,3 +27,10 @@ __pycache__/
 .ruff_cache/
 build/
 *.py[cod]
+*.tfstate
+*.tfstate.*
+.serverless-academy.yml
+logo_web.jpg
+frontend/public/profiles-mascot.png
+assets-private/
+preview-*.png

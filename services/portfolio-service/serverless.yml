@@ -1,5 +1,14 @@
 service: cloudportfolio-portfolio
 frameworkVersion: '4.17.1'
+build:
+  esbuild:
+    bundle: true
+    minify: false
+    sourcemap: false
+package:
+  patterns:
+    - '!**/.env'
+    - '!**/.env.*'
 provider:
   name: aws
   runtime: nodejs20.x

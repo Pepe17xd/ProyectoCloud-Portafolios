@@ -1,0 +1,27 @@
+.layout .dashboard-welcome { display:flex; align-items:center; justify-content:space-between; gap:22px; margin:0 0 20px; padding:30px 34px; border:1px solid #416080; border-radius:22px; background:linear-gradient(115deg,#203c5a,#25334f 70%,#393b59); overflow:hidden; }
+.welcome-eyebrow { color:#b9cff0; font-size:11px; font-weight:750; letter-spacing:.14em; }
+.dashboard-welcome h2 { margin:9px 0; color:#f7f0e8; font-size:clamp(23px,2.8vw,33px); letter-spacing:-.035em; }
+.dashboard-welcome p { margin:0; color:#d3dfed; line-height:1.5; }
+.welcome-emblem { position:relative; display:grid; place-items:center; flex:none; width:88px; height:88px; border-radius:28px; background:#a7d3ed; color:#285579; transform:rotate(-7deg); }
+.welcome-emblem span { position:absolute; right:-8px; bottom:-6px; display:grid; place-items:center; width:34px; height:34px; border-radius:12px; background:#efb2a3; color:#604357; }
+.layout .dashboard-kpis article { min-height:150px; padding:22px 22px 20px; background:#192b40; border:1px solid #354d66; }
+.layout .dashboard-kpis article:before { display:none; }
+.metric-icon { display:grid; place-items:center; float:right; width:52px; height:52px; border-radius:16px; }
+.metric-icon.sky { background:#244a65; color:#a7d8f4; }.metric-icon.lavender { background:#423c62; color:#d9cbf7; }.metric-icon.coral { background:#583e46; color:#ffc4b5; }
+.layout .dashboard-kpis strong { font-size:34px; color:#f9f1e9; }
+.layout .attention-panel { border-left:4px solid #e9ae9c; background:#222b3d; }
+.layout .dashboard-secondary-grid { grid-template-columns:minmax(0,1.7fr) minmax(240px,.8fr); }
+.layout .dashboard-secondary-grid > .panel:first-child { background:#182d42; }
+.layout .quick-actions { background:#28283e; border-color:#504868; }
+.layout .quick-actions button { border-radius:12px; transition:transform .18s,background .18s; }
+.layout .quick-actions button:hover { transform:translateX(3px); background:#383652; }
+.layout .quick-actions button svg:first-child { color:#d7c7f2; }
+.layout .panelHeading h2,.layout .quick-actions h2 { display:flex; align-items:center; gap:9px; }
+.layout .panelHeading h2 svg { color:#9bcee9; }
+.layout .timeline-panel .insight-row { position:relative; border-left:2px solid #5f7d9e; margin-left:7px; padding-left:18px; }
+.layout .timeline-panel .insight-row:before { content:''; position:absolute; left:-6px; top:50%; width:10px; height:10px; border-radius:50%; background:#a7d3ed; transform:translateY(-50%); }
+.layout .dashboard-empty,.layout .insight-empty { color:#b8c8d9; line-height:1.55; }
+.topbar-brand .brand-mark { width:38px; height:38px; }.topbar-link svg:first-child { color:#b7c9e4; }.topbar-link.active svg:first-child { color:#f0b6aa; }
+.workspace-mascot { width:45px; height:45px; object-fit:contain; }
+@media(max-width:700px) { .layout .dashboard-welcome { padding:22px; }.welcome-emblem { width:60px; height:60px; border-radius:20px; }.welcome-emblem > svg { width:28px; }.layout .dashboard-secondary-grid { grid-template-columns:1fr; }.layout .dashboard-kpis article { min-height:125px; } }
+@media(prefers-reduced-motion:reduce) { .layout .quick-actions button { transition:none; }.layout .quick-actions button:hover { transform:none; } }

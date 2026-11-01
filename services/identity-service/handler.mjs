@@ -1,14 +1,34 @@
 ﻿import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, GetCommand, QueryCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { CognitoIdentityProviderClient } from '@aws-sdk/client-cognito-identity-provider';
+import { createProvisioner } from './provisioning.mjs';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
-import { createHash, randomInt } from 'node:crypto';
+import { SQSClient, GetQueueUrlCommand } from '@aws-sdk/client-sqs';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { createWhatsAppRuntime, processWhatsAppJob, shouldRetryWhatsAppRecord } from './whatsapp-runtime.mjs';
+import { localMetaMockConfig } from './whatsapp-local-provider.mjs';
 import { claims, authorize, reply, parse, validate, key, uuid, sanitize, decodeCursor } from '@cloudportfolio/shared';
 import { orbitalApi, runDueReminders } from './orbital.mjs';
 import { createFlowEngine, createLocalNotificationProvider, createWhatsAppBusinessProvider } from './flow-engine.mjs';
 import { nextFlowRun, dispatchDueFlows } from './flow-scheduler.mjs';
 const db = DynamoDBDocumentClient.from(new DynamoDBClient({ endpoint: process.env.DYNAMODB_ENDPOINT, region: process.env.AWS_REGION || 'us-east-1', ...(process.env.DYNAMODB_ENDPOINT ? {credentials:{accessKeyId:'local',secretAccessKey:'local'}} : {}) }));
 const sns = new SNSClient({});
+const sqs = new SQSClient({ endpoint: process.env.SQS_ENDPOINT, region: process.env.AWS_REGION || 'us-east-1', ...(process.env.SQS_ENDPOINT ? { credentials: { accessKeyId: 'local', secretAccessKey: 'local' } } : {}) });
+const secrets = new SecretsManagerClient({ region: process.env.AWS_REGION || 'us-east-1' });
 const table = process.env.TABLE_NAME;
+async function getWhatsAppSecret() {
+  if (process.env.NOTIFICATION_MODE === 'integration-test') {
+    if (process.env.NODE_ENV === 'production' || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.WHATSAPP_PROVIDER_MODE !== 'meta-mock') return null;
+    return localMetaMockConfig(process.env.WHATSAPP_META_API_ORIGIN);
+  }
+  if (!process.env.WHATSAPP_META_SECRET_ARN) return null;
+  const result = await secrets.send(new GetSecretValueCommand({ SecretId: process.env.WHATSAPP_META_SECRET_ARN }));
+  return JSON.parse(result.SecretString || '{}');
+}
+const notificationMode = process.env.NOTIFICATION_MODE || 'disabled';
+const whatsAppRuntime = createWhatsAppRuntime({ db, table, sqs, queueUrl: process.env.WHATSAPP_QUEUE_URL, mode: notificationMode, secretProvider: getWhatsAppSecret, webhookVerifyToken: process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || '', appSecret: notificationMode === 'integration-test' ? process.env.WHATSAPP_TEST_APP_SECRET || '' : '', testVerification: notificationMode === 'integration-test' && process.env.WHATSAPP_VERIFICATION_PROVIDER === 'local-test', allowTestDelivery: notificationMode === 'integration-test' && process.env.WHATSAPP_ALLOW_TEST_DELIVERY === 'true' });
+if (notificationMode === 'integration-test') console.log(JSON.stringify({ action: 'whatsapp.integration-mode', providerMode: process.env.WHATSAPP_PROVIDER_MODE || 'unset', verificationProvider: process.env.WHATSAPP_VERIFICATION_PROVIDER || 'unset', testDeliveryEnabled: process.env.WHATSAPP_ALLOW_TEST_DELIVERY === 'true' }));
+const provision = createProvisioner({ db, cognito: new CognitoIdentityProviderClient({}), table, poolId: process.env.COGNITO_USER_POOL_ID });
 const fields = ["name", "email", "role", "status"];
 const required = ["name"];
 const resource = 'users';
@@ -27,6 +47,8 @@ const flowEngine = createFlowEngine({
     const notification = await localNotifications.deliver({ idempotencyKey, report, recipient });
     const actor = recipient || 'unknown';
     await db.send(new PutCommand({ TableName: table, Item: { pk: `TENANT#${tenantId}`, sk: `NOTIFY#DELIVERY#${actor}#${idempotencyKey}`, ...notification, createdAt: new Date().toISOString() } }));
+    const eventType = report.alerts?.length ? 'risk-alert' : 'weekly-summary';
+    await whatsAppRuntime.enqueue({ tenantId, userId: actor, eventType, idempotencyKey: `automation-${idempotencyKey}`, title: report.title, parameters: [String(report.alerts?.length || 0)] });
     return notification;
   },
 });
@@ -70,46 +92,7 @@ async function notificationsApi(event, actor, method, path) {
     await db.send(new PutCommand({ TableName: table, Item: item }));
     return reply(200, item);
   }
-  if (path === '/notifications/whatsapp/verification' && method === 'POST') {
-    if (mode !== 'local-simulator') return reply(503, { error: 'Official WhatsApp Business provider is not configured' });
-    const body = parse(event);
-    if (body.consent !== true || typeof body.phoneNumber !== 'string' || !/^\+[1-9]\d{7,14}$/.test(body.phoneNumber)) return reply(400, { error: 'Provide E.164 phoneNumber and explicit consent' });
-    const code = String(randomInt(100000, 1000000));
-    const hash = createHash('sha256').update(code).digest('hex');
-    const expiresAt = Math.floor(Date.now() / 1000) + 600;
-    const challengeKey = { pk: prefKey.pk, sk: `NOTIFY#VERIFY#${userId}` };
-    const pref = await db.send(new GetCommand({ TableName: table, Key: prefKey }));
-    await db.send(new PutCommand({ TableName: table, Item: { ...challengeKey, phoneNumber: body.phoneNumber, codeHash: hash, expiresAt, localCode: code } }));
-    const updated = { ...prefKey, ...(pref.Item || {}), whatsappNumber: body.phoneNumber, whatsappConsent: true, consentAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    await db.send(new PutCommand({ TableName: table, Item: updated }));
-    return reply(202, { status: 'verification-pending', channel: 'local-simulator', message: 'Simulado localmente — no se envió a WhatsApp. Consulta el buzón de verificación local.' });
-  }
-  if (path === '/notifications/verification-inbox' && method === 'GET') {
-    if (mode !== 'local-simulator') return reply(503, { error: 'Local verification inbox is disabled' });
-    const challenge = await db.send(new GetCommand({ TableName: table, Key: { pk: prefKey.pk, sk: `NOTIFY#VERIFY#${userId}` } }));
-    if (!challenge.Item || challenge.Item.expiresAt < Math.floor(Date.now() / 1000)) return reply(404, { error: 'No active local verification challenge' });
-    return reply(200, { code: challenge.Item.localCode, status: 'SIMULATED_LOCAL_NOT_SENT', notice: 'Código de desarrollo local; no verifica posesión del número en WhatsApp.' });
-  }
-  if (path === '/notifications/whatsapp/confirm' && method === 'POST') {
-    if (mode !== 'local-simulator') return reply(503, { error: 'Official WhatsApp Business provider is not configured' });
-    const body = parse(event);
-    const challengeKey = { pk: prefKey.pk, sk: `NOTIFY#VERIFY#${userId}` };
-    const challenge = await db.send(new GetCommand({ TableName: table, Key: challengeKey }));
-    if (!challenge.Item || challenge.Item.expiresAt < Math.floor(Date.now() / 1000) || createHash('sha256').update(String(body.code || '')).digest('hex') !== challenge.Item.codeHash) return reply(400, { error: 'Invalid or expired local verification code' });
-    const pref = await db.send(new GetCommand({ TableName: table, Key: prefKey }));
-    const item = { ...prefKey, ...(pref.Item || {}), whatsappVerifiedLocally: true, verifiedAt: new Date().toISOString() };
-    await db.send(new PutCommand({ TableName: table, Item: item }));
-    await db.send(new DeleteCommand({ TableName: table, Key: challengeKey }));
-    return reply(200, { status: 'verified-local-only', whatsappVerifiedLocally: true, notice: 'La simulación local no verifica el número ante WhatsApp ni habilita envíos reales.' });
-  }
-  if (path === '/notifications/whatsapp/number' && method === 'DELETE') {
-    const pref = await db.send(new GetCommand({ TableName: table, Key: prefKey }));
-    if (!pref.Item) return reply(204, {});
-    const item = { ...pref.Item, whatsappNumber: null, whatsappConsent: false, whatsappVerifiedLocally: false, consentRevokedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    await db.send(new PutCommand({ TableName: table, Item: item }));
-    await db.send(new DeleteCommand({ TableName: table, Key: { pk: prefKey.pk, sk: `NOTIFY#VERIFY#${userId}` } }));
-    return reply(200, { revoked: true });
-  }
+  if (path.startsWith('/notifications/whatsapp') || path === '/notifications/verification-inbox') return whatsAppRuntime.handle(event, actor, method, path);
   if (path === '/notifications/inbox' && method === 'GET') {
     const data = await db.send(new QueryCommand({ TableName: table, KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)', ExpressionAttributeValues: { ':pk': prefKey.pk, ':prefix': `NOTIFY#DELIVERY#${userId}#` }, Limit: 50 }));
     return reply(200, { items: data.Items || [] });
@@ -118,9 +101,14 @@ async function notificationsApi(event, actor, method, path) {
 }
 export async function api(event) {
   try {
-    const {tenantId,userId,role} = claims(event);
     const method=event.requestContext?.http?.method;
     const path=event.rawPath || event.path || '/users';
+    if (path === '/webhooks/meta/whatsapp') return await whatsAppRuntime.webhook(event, method);
+    if (path === '/auth/provision' && method === 'POST') {
+      try { if (typeof event.body !== 'string' || Buffer.byteLength(event.body, 'utf8') > 1024) return reply(400, { error: 'Invalid registration request' }); return reply(200, await provision(event.requestContext?.authorizer?.jwt?.claims, parse(event))); }
+      catch (error) { return reply(error.status || 503, { error: error.status ? error.message : 'Provisioning temporarily unavailable; retry.' }); }
+    }
+    const {tenantId,userId,role} = claims(event);
     if (path.startsWith('/flows')) return await flowsApi(event,{tenantId,userId,role},method,path);
     if (path.startsWith('/reminders') || path.startsWith('/intelligence/')) return await orbitalApi(event, { tenantId, userId, role }, method, path);
     if (path.startsWith('/notifications/')) return await notificationsApi(event, { tenantId, userId, role }, method, path);
@@ -175,6 +163,22 @@ export async function api(event) {
 }
 
 export async function scheduled() {
-  const outcomes = await runDueReminders({ limit: 20 });
+  const outcomes = await runDueReminders({ limit: 20, enqueueWhatsApp: whatsAppRuntime.enqueue });
   return { processed: outcomes.length, outcomes };
+}
+
+export async function whatsappConsumer(event) {
+  const batchItemFailures = [];
+  for (const record of event.Records || []) {
+    let job;
+    try {
+      job = JSON.parse(record.body || '{}');
+      const outcome = await processWhatsAppJob({ job, db, table, runtime: whatsAppRuntime });
+      if (outcome?.messageId) console.info(JSON.stringify({ action: 'whatsapp.accepted', tenantId: job.tenantId, userId: job.userId, idempotencyKey: job.idempotencyKey }));
+    } catch (error) {
+      if (shouldRetryWhatsAppRecord(error)) batchItemFailures.push({ itemIdentifier: record.messageId });
+      console.error(JSON.stringify({ action: 'whatsapp.consume.failed', code: error.code || 'INTERNAL', retrying: shouldRetryWhatsAppRecord(error) }));
+    }
+  }
+  return { batchItemFailures };
 }

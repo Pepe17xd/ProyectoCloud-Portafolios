@@ -2,12 +2,20 @@ service: cloudportfolio-budget
 frameworkVersion: '4.17.1'
 plugins:
   - serverless-python-requirements
+custom:
+  pythonRequirements:
+    dockerizePip: true
+package:
+  patterns:
+    - '!**/.env'
+    - '!**/.env.*'
 provider:
   name: aws
   runtime: python3.12
   region: ${opt:region, 'us-east-1'}
   stage: ${opt:stage, 'dev'}
   environment:
+    CORS_ORIGIN: ${env:CORS_ORIGIN, "*"}
     TABLE_NAME: cloudportfolio-budget-${sls:stage}
     DOMAIN_TOPIC_ARN: ${env:DOMAIN_TOPIC_ARN, ''}
     JWT_ISSUER: https://cognito-idp.${aws:region}.amazonaws.com/${env:COGNITO_USER_POOL_ID, 'local'}

@@ -1,96 +1,79 @@
-# ProFiles — Project & Portfolio Management
+# ProFiles v2.6
 
-ASTRA es una plataforma SaaS académica para conectar portafolios, proyectos, recursos, presupuestos y prioridades. El repositorio conserva el nombre técnico `cloudportfolio` para mantener compatibilidad con workspaces, servicios y recursos existentes.
+ProFiles es una aplicación SaaS para organizar portafolios, proyectos, tareas, personas, presupuestos y prioridades por organización. Incluye registro de organizaciones, control de acceso por roles, automatizaciones y Decision Lab para comparar escenarios sin alterar los datos operativos.
 
-## Inicio local
+## Funciones
 
-Requisitos: Node.js 20+, npm y Docker Desktop con Compose.
+- Portafolios, proyectos, tablero de tareas, recursos, asignaciones, presupuestos y gastos.
+- Dashboard con información obtenida de las APIs, reportes y reglas deterministas de seguimiento.
+- Registro y acceso local o mediante Cognito; el backend aprovisiona la organización y la membresía inicial.
+- Buzón interno y canal WhatsApp opcional con consentimiento, verificación, cola y webhook. La integración local usa un proveedor simulado; una cuenta Meta configurada y pruebas autorizadas son necesarias para envíos reales.
 
-```powershell
+## Arquitectura
+
+El frontend React, TypeScript y Vite consume seis servicios independientes:
+
+| Servicio | Responsabilidad | Tecnología |
+| --- | --- | --- |
+| Identity | Usuarios, organizaciones, membresías, recordatorios y notificaciones | Node.js, Cognito, DynamoDB, SQS |
+| Portfolio | Portafolios | Node.js, DynamoDB |
+| Project | Proyectos, tareas y consultas | Node.js, DynamoDB |
+| Resource | Recursos y asignaciones | Python, FastAPI, Mangum, DynamoDB |
+| Budget | Presupuestos y gastos | Python, FastAPI, Mangum, DynamoDB |
+| Priority | Prioridades y ranking | Python, FastAPI, Mangum, DynamoDB |
+
+La infraestructura prevista usa API Gateway, Lambda, SNS/SQS, S3 y Amplify Hosting. El entorno local usa DynamoDB Local y LocalStack. Consulta [arquitectura](docs/ARCHITECTURE.md) y [contratos](docs/API_CONTRACTS.md).
+
+## Ejecución local
+
+Se necesitan Node.js 20 o superior, npm, Python, Docker y Docker Compose. Desde la raíz:
+
+```bash
 npm ci
 npm run dev:local
 ```
 
-La interfaz se sirve en `http://localhost:5173`; los seis servicios API usan los puertos 4101–4106. El entorno local usa DynamoDB Local y LocalStack. No requiere credenciales AWS reales.
-
-Para cargar las fixtures de demostración pequeñas, ejecuta explícitamente `npm run seed:demo`. No ejecutes procesos de carga académica masiva en el entorno local.
-
-## Probar ASTRA localmente
-
-Arranca Docker Desktop, ejecuta `npm run dev:local` y en otra terminal corre `npm run seed:demo` una vez. Landing: <http://localhost:5173/> · login: <http://localhost:5173/login> · registro: <http://localhost:5173/register>.
-
-| Cuenta | Tenant | Rol | Contraseña |
-|---|---|---|---|
-| `admin-a@demo.local` | Empresa A | ADMIN | `Demo123!` |
-| `manager-a@demo.local` | Empresa A | MANAGER | `Demo123!` |
-| `viewer-a@demo.local` | Empresa A | VIEWER | `Demo123!` |
-| `admin-b@demo.local` | Empresa B | ADMIN | `Demo123!` |
-| `manager-b@demo.local` | Empresa B | MANAGER | `Demo123!` |
-| `viewer-b@demo.local` | Empresa B | VIEWER | `Demo123!` |
-
-Estas cuentas son ficticias y solo para el adaptador local. Pasos, capacidades por rol, persistencia y diagnóstico: [docs/LOCAL_TESTING.md](docs/LOCAL_TESTING.md).
-
-## Experiencia web
-
-- `/`: presentación pública ASTRA.
-- `/login`: autenticación local o Cognito configurado.
-- `/register`: crea una organización local aislada y su usuario ADMIN inicial cuando `VITE_AUTH_MODE=local`; AWS todavía requiere un flujo de aprovisionamiento con Cognito.
-- `/app` y `/app/portfolios`, `/app/projects`, `/app/resources`, `/app/budgets`, `/app/priorities`, `/app/decisions`: consola protegida.
-
-La vista previa de la landing está identificada como demostración y no consulta datos de tenants. El dashboard interno consume las APIs.
-
-Consulta [frontend/README.md](frontend/README.md) para la configuración del frontend y [ASTRA_FRONTEND_REPORT.md](ASTRA_FRONTEND_REPORT.md) para los cambios, pruebas y límites de esta actualización.
-
-La landing usa una fotografía local de la Vía Láctea de ESO/F. Char con crédito visible y atribución CC BY 4.0. La guía de fuente y adaptación está en [docs/ASTRA_MILKY_WAY_ASSET.md](docs/ASTRA_MILKY_WAY_ASSET.md). El registro de organizaciones funciona únicamente con el adaptador local; no está conectado al aprovisionamiento AWS Cognito.
-
-## Stack
-
-- React 19, TypeScript y Vite.
-- Seis microservicios Node.js/Python con API Gateway/Lambda previstos para AWS.
-- DynamoDB por servicio, SNS/SQS, S3 y adaptadores locales.
-- AWS Amplify como destino previsto del frontend.
+Abre `http://localhost:5173`. El registro local crea una organización y un administrador; las cuentas y datos de demostración son opcionales (`npm run seed:demo`). La guía [pruebas locales](docs/LOCAL_TESTING.md) explica el entorno y sus limitaciones.
 
 ## AWS Academy
 
-El preflight de solo lectura y el despliegue explícito están disponibles como `npm run deploy:academy:check`, `npm run deploy:academy` y `npm run deploy:academy:verify`. No se han desplegado recursos. Consulta [la guía AWS Academy](docs/AWS_ACADEMY.md) para credenciales temporales, límites IAM/CloudFormation, Amplify y la carga académica separada.
+Consulta [la guía de despliegue](docs/DEPLOY_AWS_ACADEMY.md) para herramientas, credenciales temporales, LabRole, Serverless Framework v4 y permisos. Copia `.env.example` a `.env` solo si necesitas configuración local; también puedes utilizar credenciales o perfiles de AWS CLI. Nunca subas `.env` ni secretos.
 
-## ProFiles Flow
-
-El dashboard incluye automatizaciones deterministas y notificaciones simuladas. `npm run dev:local` inicia también el scheduler local con identidad de servicio efímera. Consulta [docs/PROFILES_FLOW.md](docs/PROFILES_FLOW.md) para endpoints, recuperación y límites de planificación AWS.
-
-## Decision Lab
-
-La sección Decisiones compara, de forma determinista y sin modificar datos operativos, el presupuesto, las prioridades, las asignaciones y las fechas planificadas del tenant. Las simulaciones indican datos no calculables y no predicen resultados futuros. Consulta [docs/DECISION_LAB.md](docs/DECISION_LAB.md) para fórmulas y contratos API.
-
-## Verificaciones
-
-```powershell
-npm test
-py -3.11 -m pytest services/resource-service services/budget-service services/priority-service -q
-npm run build --workspace frontend
+```bash
+npm ci
+npm run deploy:academy:check
+npm run deploy:academy
 ```
 
-La configuración AWS no debe considerarse desplegada por estar declarada. Consulta `docs/AWS_DEPLOYMENT.md` y `ASTRA_IMPLEMENTATION_STATUS.md` para el estado comprobado.
+El comando obtiene IDs y URLs de los recursos durante el despliegue. Los permisos y límites varían entre laboratorios; el empaquetado completo y el despliegue en un laboratorio nuevo requieren verificación real. La carga masiva es independiente y opcional.
 
-## ASTRA Galaxy: inteligencia y alertas locales
+## WhatsApp
 
-El dashboard incluye Inteligencia ASTRA determinista (consultas de solo lectura), acciones confirmadas para crear recordatorios o tareas y reportes CSV guardados por tenant. La propuesta usa patrones limitados, muestra una vista previa y exige confirmación. El scheduler local persiste recordatorios una vez/diarios/semanales y entrega en el buzón **“Simulado localmente — No enviado a WhatsApp”**. No hay LLM ni mensajes externos reales; la verificación local de teléfono no acredita posesión.
+El canal es opcional y permanece deshabilitado sin configuración de proveedor y plantillas. Los secretos de Meta son exclusivamente del servidor. La [guía de integración](docs/WHATSAPP_INTEGRATION.md) describe consentimiento, verificación, webhook, cola, configuración y pruebas locales. La aceptación de una petición por Meta no demuestra entrega; la entrega real y el despliegue AWS no están verificados por las pruebas simuladas.
 
-```powershell
-# Tras levantar el stack local. Es una inicialización idempotente de recursos,
-# no carga registros y no borra volúmenes.
-node scripts/init-local.mjs
+## Pruebas
+
+```bash
+npm test
+npm run build --workspace frontend
+npm run test:whatsapp:integration
 npm run test:e2e
 ```
 
-Playwright requiere el stack local ejecutándose (`npm run dev:local`), que inicia APIs, consumidores SNS/SQS y scheduler. La suite crea pocos registros identificados y actualiza solo un recordatorio propio de prueba para forzar vencimiento; no borra filas ni volúmenes. Consulta `docs/TEAM_SETUP.md`, `docs/ASTRA_GALACTIC_ARCHITECTURE.md`, `docs/API_GALAXY_CONTRACTS.md` y `docs/EVENTS.md`.
+La integración WhatsApp requiere Docker, DynamoDB Local y LocalStack; ejecuta un servidor Meta simulado y no envía mensajes reales. Las pruebas de navegador requieren los servicios locales o un entorno controlado, según la prueba. Consulta `playwright.config.ts` y las guías locales.
 
-## Recordatorios, acciones y reportes Orbital
+## Limitaciones
 
-El dashboard incluye propuestas deterministas de recordatorio, confirmación explícita, recurrencia una vez/diaria/semanal, pausa/reanudación/cancelación e historial. La API persiste recordatorios por tenant/usuario; `reminder-scheduler.mjs` consulta el índice de vencimientos y entrega en el buzón local con etiqueta de simulación. Los reportes de estado, avance, vencimientos, recursos, presupuestos, prioridades y riesgos consultan APIs reales; se persisten y se exportan a CSV. Se recorren hasta 10 páginas de 100 elementos por servicio (máximo 1 000); el reporte marca si queda truncado. No hay filtros personalizados ni PDF.
+La cobertura de pruebas locales y simuladas no demuestra que todas las operaciones CRUD, el aislamiento entre organizaciones, los eventos SNS/SQS ni las automatizaciones funcionen en AWS real. Los requisitos IAM de AWS Academy y la licencia o autenticación de Serverless Framework v4 dependen del entorno. Las dependencias y sus avisos de licencia siguen sujetos a sus propias condiciones.
 
-Reinicia los procesos después de cambios, ejecuta `node scripts/init-local.mjs` para crear la tabla nueva de recordatorios si no existía y después `npm run dev:local`. Esta inicialización local no borra registros ni corre seeds.
+## Contribuir
 
-Consulta `docs/API_GALAXY_CONTRACTS.md` para los formatos exactos. AWS declara una tabla/index y un scheduler EventBridge, pero no se ha validado Serverless packaging ni desplegado en AWS Academy. WhatsApp permanece deshabilitado; ninguna entrega sale del buzón local.
+Abre un issue para discutir cambios significativos y envía una propuesta con descripción y pruebas. No incluyas credenciales, datos personales ni artefactos de compilación. Las contribuciones deben poder distribuirse bajo la licencia del proyecto.
 
-Consulta [ASTRA_ORBITAL_RELEASE_REPORT.md](ASTRA_ORBITAL_RELEASE_REPORT.md) para cambios, evidencia de pruebas, límites actuales y estado de publicación.
+## Recursos de terceros
+
+Las imágenes históricas `frontend/public/milky-way-source.jpg`, `frontend/public/milky-way.webp` y `docs/ASTRA_MILKY_WAY_SCREENSHOT.png` contienen la fotografía [Majestic Milky Way](https://www.eso.org/public/images/milkywaylasilla-cc/). Crédito: **ESO/F. Char**; licencia [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). La versión WebP fue comprimida y la captura histórica muestra la imagen como fondo adaptado. Estos recursos no están sujetos a la licencia MIT del código. Consulta [procedencia de activos](docs/ASSET_PROVENANCE.md) y conserva el crédito visible si los muestras o redistribuyes.
+
+## Licencia
+
+Este proyecto se distribuye bajo la [licencia MIT](LICENSE). Copyright (c) 2026 CloudComputin-utec2026-02. Las marcas y activos de terceros conservan sus condiciones correspondientes.

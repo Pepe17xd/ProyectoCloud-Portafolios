@@ -31,9 +31,7 @@ function PortfolioIllustration() {
 
 function WorkspacePreview() {
   return <div className="landing-preview" aria-label="Vista ilustrativa de la interfaz ProFiles; no muestra datos reales">
-    <aside className="landing-preview-nav"><Brand compact/><span className="landing-preview-label">ESPACIO DE TRABAJO</span>
-      <span><FolderKanban size={15}/> Proyectos</span><span><Layers size={15}/> Portafolios</span><span><Bell size={15}/> Automatizaciones</span>
-    </aside>
+    <div className="landing-preview-nav"><Brand compact/><span>Inicio</span><span>Proyectos</span><span>Equipo</span><span>Finanzas</span><span>Herramientas</span></div>
     <div className="landing-preview-main"><span className="landing-preview-note">VISTA DE INTERFAZ · SIN DATOS REALES</span><h2>Resumen ejecutivo</h2><p>Estado y pendientes de tu organización</p>
       <div className="landing-preview-kpis"><div><small>Proyectos activos</small><b>—</b></div><div><small>Por revisar</small><b>—</b></div><div><small>Escenarios</small><b>—</b></div></div>
       <div className="landing-preview-row"><span className="landing-preview-dot"/><div><b>Actividad del proyecto</b><small>Estado · fecha · responsable</small></div><Check size={16}/></div>
@@ -45,6 +43,7 @@ function WorkspacePreview() {
 export default function Landing() {
   const [menuOpen, setMenuOpen] = useState(false);
   const closeMenu = () => setMenuOpen(false);
+  const github = import.meta.env.VITE_GITHUB_URL as string | undefined;
 
   return <div className="profile-landing">
     <header className="landing-header">
@@ -81,6 +80,6 @@ export default function Landing() {
       </section>
     </main>
 
-    <footer className="landing-footer"><Brand/><span>Project &amp; Portfolio Management</span><a href="/login">Acceder a ProFiles <ArrowRight size={14}/></a></footer>
+    <footer className="landing-footer"><Brand/><span>Project &amp; Portfolio Management</span>{github && /^https:\/\/github\.com\//i.test(github) && <a href={github}>Repositorio en GitHub</a>}<a href="/login">Acceder a ProFiles <ArrowRight size={14}/></a></footer>
   </div>;
 }

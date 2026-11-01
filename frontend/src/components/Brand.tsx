@@ -2,10 +2,9 @@ type BrandProps = { light?: boolean; compact?: boolean };
 
 export function BrandIcon({ large = false }: { large?: boolean }) {
   return <svg className={`brand-mark${large ? ' brand-mark-large' : ''}`} viewBox="0 0 40 40" aria-hidden="true" focusable="false">
-    <path d="M4.5 11.5a2 2 0 0 1 2-2h10l3 3h13a2 2 0 0 1 2 2v15a2 2 0 0 1-2 2h-26a2 2 0 0 1-2-2z" fill="currentColor" opacity=".16"/>
-    <path d="M4.5 14.5a2 2 0 0 1 2-2h9.2l3 3h13.8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-26a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/>
-    <path d="M11 21h9m-9 4h15m-15 4h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" opacity=".82"/>
-    <path d="m27 20 2 2 4-4" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+    <path fill="#8ac9f5" d="M4 10a4 4 0 0 1 4-4h9l4 4h11a4 4 0 0 1 4 4v15a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5z"/>
+    <path fill="#386cb2" d="M5 16a4 4 0 0 1 4-4h22a4 4 0 0 1 4 4l-2 14a5 5 0 0 1-5 4H10a5 5 0 0 1-5-4z"/>
+    <path fill="#ffad9d" d="M17 18h6a3 3 0 0 1 0 6h-6a3 3 0 0 1 0-6z"/>
   </svg>;
 }
 

@@ -220,7 +220,7 @@ export async function orbitalApi(event, actor, method, path) {
   return reply(404, { error: 'Not found' });
 }
 
-export async function runDueReminders({ limit = 20 } = {}) {
+export async function runDueReminders({ limit = 20, enqueueWhatsApp = async () => false } = {}) {
   const now = new Date().toISOString();
   const due = await db.send(new QueryCommand({ TableName: remindersTable, IndexName: 'DueIndex', KeyConditionExpression: 'gsi1pk = :pk AND gsi1sk <= :due', ExpressionAttributeValues: { ':pk': 'REMINDER#ACTIVE', ':due': `${now}\uffff` }, Limit: limit }));
   const outcomes = [];
@@ -232,6 +232,7 @@ export async function runDueReminders({ limit = 20 } = {}) {
     } catch (error) {
       if (error.name !== 'ConditionalCheckFailedException') throw error;
     }
+    const whatsappQueued = await enqueueWhatsApp({ tenantId: reminder.tenantId, userId: reminder.userId, eventType: 'reminder', idempotencyKey: notificationId, title: reminder.title, parameters: [String(reminder.title).slice(0, 120)] });
     const current = await db.send(new GetCommand({ TableName: remindersTable, Key: { pk: reminder.pk, sk: reminder.sk } }));
     if (!current.Item || current.Item.status !== 'SCHEDULED' || current.Item.dueAt !== reminder.dueAt) continue;
     if (reminder.recurrence === 'ONCE') {
@@ -242,7 +243,7 @@ export async function runDueReminders({ limit = 20 } = {}) {
       while (Date.parse(nextDue) <= Date.now()) nextDue = nextRecurringDue(nextDue, reminder.timezone, stepDays);
       await db.send(new PutCommand({ TableName: remindersTable, Item: { ...current.Item, ...gsi(nextDue, reminder.id), dueAt: nextDue, lastDeliveredAt: now, updatedAt: now, audit: [...(current.Item.audit || []), { at: now, actorId: 'scheduler', action: 'DELIVERED_AND_RESCHEDULED' }].slice(-50) }, ConditionExpression: '#status = :scheduled AND dueAt = :due', ExpressionAttributeNames: { '#status': 'status' }, ExpressionAttributeValues: { ':scheduled': 'SCHEDULED', ':due': reminder.dueAt } }));
     }
-    outcomes.push({ reminderId: reminder.id, notificationId, status: 'SIMULATED_LOCAL' });
+    outcomes.push({ reminderId: reminder.id, notificationId, status: 'INTERNAL_INBOX_CREATED', whatsappQueued });
   }
   return outcomes;
 }

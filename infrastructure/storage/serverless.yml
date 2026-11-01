@@ -1,5 +1,9 @@
 service: cloudportfolio-storage
 frameworkVersion: '4.17.1'
+package:
+  patterns:
+    - '!**/.env'
+    - '!**/.env.*'
 provider:
   name: aws
   region: ${opt:region, 'us-east-1'}

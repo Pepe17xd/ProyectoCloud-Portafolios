@@ -8,14 +8,21 @@ for (const service of ['identity','portfolio','project','resource','budget','pri
   const TableName = `cloudportfolio-${service}-local`;
   try {
     const existing = await dynamo.send(new DescribeTableCommand({ TableName }));
-    if (service === 'identity' && !existing.Table.GlobalSecondaryIndexes?.some(index => index.IndexName === 'FlowDueIndex')) {
-      await dynamo.send(new UpdateTableCommand({ TableName, AttributeDefinitions: [{ AttributeName: 'gsi2pk', AttributeType: 'S' }, { AttributeName: 'gsi2sk', AttributeType: 'S' }], GlobalSecondaryIndexUpdates: [{ Create: { IndexName: 'FlowDueIndex', KeySchema: [{ AttributeName: 'gsi2pk', KeyType: 'HASH' }, { AttributeName: 'gsi2sk', KeyType: 'RANGE' }], Projection: { ProjectionType: 'ALL' } } }] }));
-      console.log(`Added FlowDueIndex to ${TableName}`);
+    if (service === 'identity') {
+      const indexes = existing.Table.GlobalSecondaryIndexes || [];
+      const missing = [];
+      if (!indexes.some(index => index.IndexName === 'FlowDueIndex')) missing.push({ IndexName: 'FlowDueIndex', AttributeDefinitions: [{ AttributeName: 'gsi2pk', AttributeType: 'S' }, { AttributeName: 'gsi2sk', AttributeType: 'S' }], KeySchema: [{ AttributeName: 'gsi2pk', KeyType: 'HASH' }, { AttributeName: 'gsi2sk', KeyType: 'RANGE' }] });
+      if (!indexes.some(index => index.IndexName === 'WhatsAppNumberIndex')) missing.push({ IndexName: 'WhatsAppNumberIndex', AttributeDefinitions: [{ AttributeName: 'gsi3pk', AttributeType: 'S' }, { AttributeName: 'gsi3sk', AttributeType: 'S' }], KeySchema: [{ AttributeName: 'gsi3pk', KeyType: 'HASH' }, { AttributeName: 'gsi3sk', KeyType: 'RANGE' }] });
+      for (const index of missing) {
+        await dynamo.send(new UpdateTableCommand({ TableName, AttributeDefinitions: index.AttributeDefinitions, GlobalSecondaryIndexUpdates: [{ Create: { IndexName: index.IndexName, KeySchema: index.KeySchema, Projection: { ProjectionType: 'ALL' } } }] }));
+        for (let attempt = 0; attempt < 60; attempt++) { const state = await dynamo.send(new DescribeTableCommand({ TableName })); if (state.Table.GlobalSecondaryIndexes?.some(item => item.IndexName === index.IndexName && item.IndexStatus === 'ACTIVE')) break; await new Promise(resolve => setTimeout(resolve, 500)); }
+      }
+      if (missing.length) console.log(`Added missing identity indexes to ${TableName}`);
     }
   }
   catch (error) {
     if (error.name !== 'ResourceNotFoundException') throw error;
-    const flowIndex = service === 'identity' ? { AttributeDefinitions: [{ AttributeName: 'gsi2pk', AttributeType: 'S' }, { AttributeName: 'gsi2sk', AttributeType: 'S' }], GlobalSecondaryIndexes: [{ IndexName: 'FlowDueIndex', KeySchema: [{ AttributeName: 'gsi2pk', KeyType: 'HASH' }, { AttributeName: 'gsi2sk', KeyType: 'RANGE' }], Projection: { ProjectionType: 'ALL' } }] } : {};
+    const flowIndex = service === 'identity' ? { AttributeDefinitions: [{ AttributeName: 'gsi2pk', AttributeType: 'S' }, { AttributeName: 'gsi2sk', AttributeType: 'S' }, { AttributeName: 'gsi3pk', AttributeType: 'S' }, { AttributeName: 'gsi3sk', AttributeType: 'S' }], GlobalSecondaryIndexes: [{ IndexName: 'FlowDueIndex', KeySchema: [{ AttributeName: 'gsi2pk', KeyType: 'HASH' }, { AttributeName: 'gsi2sk', KeyType: 'RANGE' }], Projection: { ProjectionType: 'ALL' } }, { IndexName: 'WhatsAppNumberIndex', KeySchema: [{ AttributeName: 'gsi3pk', KeyType: 'HASH' }, { AttributeName: 'gsi3sk', KeyType: 'RANGE' }], Projection: { ProjectionType: 'ALL' } }] } : {};
     await dynamo.send(new CreateTableCommand({ TableName, BillingMode: 'PAY_PER_REQUEST', AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }, { AttributeName: 'sk', AttributeType: 'S' }, ...(flowIndex.AttributeDefinitions || [])], KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }, { AttributeName: 'sk', KeyType: 'RANGE' }], ...(flowIndex.GlobalSecondaryIndexes ? { GlobalSecondaryIndexes: flowIndex.GlobalSecondaryIndexes } : {}) }));
     console.log(`Created ${TableName}`);
   }
@@ -48,6 +55,9 @@ await s3.send(new PutBucketCorsCommand({ Bucket: bucket, CORSConfiguration: { CO
 const topic = await sns.send(new CreateTopicCommand({ Name: 'cloudportfolio-domain-local' }));
 const dlq = await sqs.send(new CreateQueueCommand({ QueueName: 'cloudportfolio-domain-dlq-local' }));
 const dlqArn = (await sqs.send(new GetQueueAttributesCommand({ QueueUrl: dlq.QueueUrl, AttributeNames: ['QueueArn'] }))).Attributes.QueueArn;
+const whatsappDlq = await sqs.send(new CreateQueueCommand({ QueueName: 'cloudportfolio-whatsapp-dlq-local' }));
+const whatsappDlqArn = (await sqs.send(new GetQueueAttributesCommand({ QueueUrl: whatsappDlq.QueueUrl, AttributeNames: ['QueueArn'] }))).Attributes.QueueArn;
+await sqs.send(new CreateQueueCommand({ QueueName: 'cloudportfolio-whatsapp-local', Attributes: { VisibilityTimeout: '180', RedrivePolicy: JSON.stringify({ deadLetterTargetArn: whatsappDlqArn, maxReceiveCount: '5' }) } }));
 const eventFilters = { budget: ['ProjectCreated'], project: ['BudgetThresholdExceeded'], portfolio: ['ProjectCreated','ProjectCompleted'], resource: ['ProjectCreated','ProjectUpdated'], priority: ['ProjectCreated','ProjectUpdated','BudgetThresholdExceeded','ResourceAssigned'], identity: ['UserCreated','MembershipChanged','ProjectCreated','ProjectUpdated','ProjectCompleted','BudgetThresholdExceeded','ResourceAssigned','PriorityRecalculated'] };
 for (const service of ['budget','project','portfolio','resource','priority','identity']) {
   const queue = await sqs.send(new CreateQueueCommand({ QueueName: `cloudportfolio-${service}-local`, Attributes: { VisibilityTimeout: '120', RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn, maxReceiveCount: '4' }) } }));
@@ -59,4 +69,4 @@ for (const service of ['budget','project','portfolio','resource','priority','ide
   if (subscriptionArn && subscriptionArn !== 'PendingConfirmation') await sns.send(new SetSubscriptionAttributesCommand({ SubscriptionArn: subscriptionArn, AttributeName: 'FilterPolicy', AttributeValue: JSON.stringify({ eventType: eventFilters[service] }) }));
 }
 await s3.destroy(); await sns.destroy(); await sqs.destroy();
-console.log('Local DynamoDB tables (including reminders), protected S3 bucket, SNS topic, six SQS subscriptions and DLQ are ready.');
+console.log('Local DynamoDB tables, protected S3 bucket, SNS subscriptions, notification queue and dead-letter queues are ready.');
