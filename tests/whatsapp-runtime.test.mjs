@@ -24,6 +24,7 @@ test('Identity stack adds an optional Meta queue consumer and public signed webh
   const handler = readFileSync(new URL('../services/identity-service/handler.mjs', import.meta.url), 'utf8');
   assert.match(events, /WhatsAppQueue:/); assert.match(events, /WhatsAppDLQ:/); assert.match(events, /WhatsAppQueueArn:/); assert.match(events, /WhatsAppQueueUrl:/); assert.match(events, /SqsManagedSseEnabled: true/);
   assert.match(identity, /handler\.whatsappConsumer/); assert.match(identity, /functionResponseType: ReportBatchItemFailures/); assert.match(identity, /secretsmanager:GetSecretValue/); assert.match(identity, /WHATSAPP_META_SECRET_ARN/);
+  assert.match(identity, /cloudportfolio\/whatsapp\/\$\{aws:accountId\}\/\$\{sls:stage\}-\*/); assert.doesNotMatch(identity, /WHATSAPP_(?:ACCESS_TOKEN|APP_SECRET|WEBHOOK_VERIFY_TOKEN):/);
   assert.match(identity, /path: \/webhooks\/meta\/whatsapp, method: GET/); assert.match(identity, /path: \/webhooks\/meta\/whatsapp, method: POST/);
   assert.match(handler, /processWhatsAppJob/); assert.match(handler, /whatsAppRuntime\.webhook\(event, method\)/);
 });

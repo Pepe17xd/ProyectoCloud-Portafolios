@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
 import { SendMessageCommand } from '@aws-sdk/client-sqs';
-import { createMetaAdapter, validE164, verifyMetaSignature } from './meta-whatsapp.mjs';
+import { createMetaAdapter, validE164, validateMetaProviderConfig, verifyMetaSignature } from './meta-whatsapp.mjs';
 
 const CONSENT_VERSION = 'profiles-whatsapp-2026-01';
 const readableError = (statusCode, message) => ({ statusCode, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: message }) });
@@ -28,14 +28,16 @@ export function createWhatsAppRuntime({ db, table, sqs, queueUrl, mode = 'disabl
       return cfg;
     }
     if (mode !== 'meta') return null;
-    return secretProvider();
+    return validateMetaProviderConfig(await secretProvider());
   }
   async function sendVerificationCode(phoneNumber, code) {
     if (mode === 'integration-test' && testVerification && process.env.NODE_ENV !== 'production') return { provider: 'local-test' };
     const cfg = await providerConfig();
-    if (!cfg?.accessToken || !cfg.phoneNumberId || !cfg.templates?.verification) throw Object.assign(new Error('WhatsApp verification provider is not configured'), { code: 'PROVIDER_DISABLED' });
+    if (!cfg?.accessToken || !cfg.phoneNumberId || !cfg.graphVersion || !cfg.templates?.verification) throw Object.assign(new Error('WhatsApp verification provider is not configured'), { code: 'PROVIDER_DISABLED' });
     const template = cfg.templates.verification;
-    const response = await fetchImpl(`https://graph.facebook.com/${cfg.graphVersion || 'v22.0'}/${cfg.phoneNumberId}/messages`, { method: 'POST', headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ messaging_product: 'whatsapp', to: phoneNumber.slice(1), type: 'template', template: { name: template.name, language: { code: template.language }, components: [{ type: 'body', parameters: [{ type: 'text', text: code }] }] } }) });
+    const testOrigin = mode === 'integration-test' && process.env.NOTIFICATION_MODE === 'integration-test' && process.env.NODE_ENV !== 'production' && !process.env.AWS_LAMBDA_FUNCTION_NAME ? cfg.apiOrigin : undefined;
+    const apiOrigin = testOrigin || 'https://graph.facebook.com';
+    const response = await fetchImpl(`${apiOrigin.replace(/\/$/, '')}/${cfg.graphVersion}/${cfg.phoneNumberId}/messages`, { method: 'POST', headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ messaging_product: 'whatsapp', to: phoneNumber.slice(1), type: 'template', template: { name: template.name, language: { code: template.language }, components: [{ type: 'body', parameters: [{ type: 'text', text: code }] }] } }) });
     if (!response.ok) throw Object.assign(new Error('Verification message could not be sent'), { code: response.status === 429 || response.status >= 500 ? 'RETRYABLE' : 'PROVIDER_REJECTED' });
     const result = await response.json();
     return { provider: 'meta', messageId: result.messages?.[0]?.id };

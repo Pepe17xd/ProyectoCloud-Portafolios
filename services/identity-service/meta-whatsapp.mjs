@@ -1,6 +1,29 @@
 ﻿import { createHmac, timingSafeEqual } from 'node:crypto';
 
 export const validE164 = number => typeof number === 'string' && /^\+[1-9]\d{7,14}$/.test(number);
+export function validateMetaProviderConfig(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (!value.accessToken || !/^\d+$/.test(value.phoneNumberId || '') || !/^v\d+\.\d+$/.test(value.graphVersion || '') || !value.appSecret || String(value.appSecret).length < 16 || !value.webhookVerifyToken || String(value.webhookVerifyToken).length < 16 || value.templatesApproved !== true) return null;
+  if (value.wabaId && !/^\d+$/.test(value.wabaId)) return null;
+  const templates = value.templates || {};
+  for (const type of ['verification', 'reminder', 'risk-alert', 'weekly-summary']) {
+    const template = templates[type];
+    if (!/^[a-z0-9_]{1,512}$/.test(template?.name || '') || !/^[a-z]{2,3}(?:_[A-Z]{2})?$/.test(template?.language || '')) return null;
+  }
+  for (const template of Object.values(templates)) {
+    if (!/^[a-z0-9_]{1,512}$/.test(template?.name || '') || !/^[a-z]{2,3}(?:_[A-Z]{2})?$/.test(template?.language || '')) return null;
+  }
+  return {
+    accessToken: value.accessToken,
+    phoneNumberId: value.phoneNumberId,
+    ...(value.wabaId ? { wabaId: value.wabaId } : {}),
+    graphVersion: value.graphVersion,
+    templatesApproved: true,
+    appSecret: value.appSecret,
+    webhookVerifyToken: value.webhookVerifyToken,
+    templates,
+  };
+}
 export function verifyMetaSignature(rawBody, signature, appSecret) {
   if (!Buffer.isBuffer(rawBody) || typeof appSecret !== 'string' || !appSecret || !/^sha256=[0-9a-f]{64}$/i.test(signature || '')) return false;
   const expected = createHmac('sha256', appSecret).update(rawBody).digest();

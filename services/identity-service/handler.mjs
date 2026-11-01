@@ -9,7 +9,8 @@ import { createWhatsAppRuntime, processWhatsAppJob, shouldRetryWhatsAppRecord } 
 import { localMetaMockConfig } from './whatsapp-local-provider.mjs';
 import { claims, authorize, reply, parse, validate, key, uuid, sanitize, decodeCursor } from '@cloudportfolio/shared';
 import { orbitalApi, runDueReminders } from './orbital.mjs';
-import { createFlowEngine, createLocalNotificationProvider, createWhatsAppBusinessProvider } from './flow-engine.mjs';
+import { buildRecipientFlowReport, createFlowEngine, createLocalNotificationProvider, createWhatsAppBusinessProvider } from './flow-engine.mjs';
+import { createHash } from 'node:crypto';
 import { nextFlowRun, dispatchDueFlows } from './flow-scheduler.mjs';
 const db = DynamoDBDocumentClient.from(new DynamoDBClient({ endpoint: process.env.DYNAMODB_ENDPOINT, region: process.env.AWS_REGION || 'us-east-1', ...(process.env.DYNAMODB_ENDPOINT ? {credentials:{accessKeyId:'local',secretAccessKey:'local'}} : {}) }));
 const sns = new SNSClient({});
@@ -22,8 +23,12 @@ async function getWhatsAppSecret() {
     return localMetaMockConfig(process.env.WHATSAPP_META_API_ORIGIN);
   }
   if (!process.env.WHATSAPP_META_SECRET_ARN) return null;
-  const result = await secrets.send(new GetSecretValueCommand({ SecretId: process.env.WHATSAPP_META_SECRET_ARN }));
-  return JSON.parse(result.SecretString || '{}');
+  try {
+    const result = await secrets.send(new GetSecretValueCommand({ SecretId: process.env.WHATSAPP_META_SECRET_ARN }));
+    return JSON.parse(result.SecretString || '{}');
+  } catch {
+    throw Object.assign(new Error('WhatsApp provider configuration is unavailable.'), { code: 'SECRET_UNAVAILABLE' });
+  }
 }
 const notificationMode = process.env.NOTIFICATION_MODE || 'disabled';
 const whatsAppRuntime = createWhatsAppRuntime({ db, table, sqs, queueUrl: process.env.WHATSAPP_QUEUE_URL, mode: notificationMode, secretProvider: getWhatsAppSecret, webhookVerifyToken: process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || '', appSecret: notificationMode === 'integration-test' ? process.env.WHATSAPP_TEST_APP_SECRET || '' : '', testVerification: notificationMode === 'integration-test' && process.env.WHATSAPP_VERIFICATION_PROVIDER === 'local-test', allowTestDelivery: notificationMode === 'integration-test' && process.env.WHATSAPP_ALLOW_TEST_DELIVERY === 'true' });
@@ -43,13 +48,24 @@ const flowEngine = createFlowEngine({
     return { tenantId, fetchedAt: new Date().toISOString(), projects, portfolios, budgets, resources, priorities, pendingDecisionScenarios, tasks };
   },
   persist: async (run) => { const id = `FLOWRUN#${run.executionId}`; await db.send(new PutCommand({ TableName: table, Item: { pk: `TENANT#${run.tenantId}`, sk: id, ...run } })); },
-  deliver: async ({ tenantId, idempotencyKey, report, recipient }) => {
+  deliver: async ({ tenantId, idempotencyKey, report, recipient, source, alerts, workflowId }) => {
     const notification = await localNotifications.deliver({ idempotencyKey, report, recipient });
     const actor = recipient || 'unknown';
     await db.send(new PutCommand({ TableName: table, Item: { pk: `TENANT#${tenantId}`, sk: `NOTIFY#DELIVERY#${actor}#${idempotencyKey}`, ...notification, createdAt: new Date().toISOString() } }));
-    const eventType = report.alerts?.length ? 'risk-alert' : 'weekly-summary';
-    await whatsAppRuntime.enqueue({ tenantId, userId: actor, eventType, idempotencyKey: `automation-${idempotencyKey}`, title: report.title, parameters: [String(report.alerts?.length || 0)] });
-    return notification;
+    let lastKey, queued = 0;
+    do {
+      const page = await db.send(new QueryCommand({ TableName: table, KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)', ExpressionAttributeValues: { ':pk': `TENANT#${tenantId}`, ':prefix': 'MEMBERSHIP#' }, Limit: 100, ExclusiveStartKey: lastKey }));
+      for (const membership of page.Items || []) {
+        if (membership.status !== 'ACTIVE' || !membership.userId || !['ADMIN', 'MANAGER', 'VIEWER'].includes(membership.role)) continue;
+        const profile = await db.send(new GetCommand({ TableName: table, Key: { pk: `TENANT#${tenantId}`, sk: `ITEM#${membership.userId}` } }));
+        if (profile.Item?.status !== 'ACTIVE') continue;
+        const personalized = buildRecipientFlowReport({ role: membership.role, userId: membership.userId, source, alerts, workflowId, executionId: idempotencyKey });
+        const stableId = createHash('sha256').update(`${tenantId}:${workflowId}:${idempotencyKey}:${membership.userId}`).digest('hex');
+        if (await whatsAppRuntime.enqueue({ tenantId, userId: membership.userId, eventType: personalized.eventType, idempotencyKey: `flow-${stableId}`, title: personalized.report.title, parameters: personalized.parameters })) queued += 1;
+      }
+      lastKey = page.LastEvaluatedKey;
+    } while (lastKey);
+    return { ...notification, whatsappQueuedCount: queued, whatsappStatus: queued ? 'REQUESTED' : 'NOT_REQUESTED' };
   },
 });
 const localNotifications = createLocalNotificationProvider();
@@ -69,9 +85,9 @@ async function flowsApi(event, actor, method, path) {
   }
   const [,collection,id,action,executionId] = path.split('/'); if (collection !== 'flows' || !id) return reply(404,{error:'Not found'});
   const flowKey={pk:prefix,sk:`FLOW#${id}`}; const got=await db.send(new GetCommand({TableName:table,Key:flowKey})); if(!got.Item)return reply(404,{error:'Not found'});
-  if(method==='POST'&&action==='run') { if(got.Item.enabled!==true)return reply(409,{error:'Flow is paused'}); try { const body=event.body?parse(event):{};let runActor={userId,role};if(role==='SERVICE'){if(userId!==got.Item.createdBy) return reply(403,{error:'Service subject does not own this flow'});const [profile,membership]=await Promise.all([db.send(new GetCommand({TableName:table,Key:{pk:prefix,sk:`ITEM#${userId}`}})),db.send(new GetCommand({TableName:table,Key:{pk:prefix,sk:`MEMBERSHIP#${userId}`}}))]);if(profile.Item?.status!=='ACTIVE'||membership.Item?.status!=='ACTIVE'||!['ADMIN','MANAGER'].includes(membership.Item.role))return reply(403,{error:'Flow owner is inactive or no longer authorized'});runActor={userId,role:membership.Item.role};}const result=await flowEngine({tenantId,actor:runActor,workflowId:id,config:got.Item,event,executionId:body.executionId});return reply(200,result); } catch(error) { const run={pk:prefix,sk:`FLOWRUN#${uuid()}`,workflowId:id,status:'FAILED',errors:[{message:error.message,at:new Date().toISOString()}],createdAt:new Date().toISOString()}; await db.send(new PutCommand({TableName:table,Item:run})); return reply(error.status||502,{error:error.message,executionId:run.sk.slice(8)}); } }
-  if(method==='GET'&&action==='runs'&&!executionId){const data=await db.send(new QueryCommand({TableName:table,KeyConditionExpression:'pk = :pk AND begins_with(sk,:sk)',ExpressionAttributeValues:{':pk':prefix,':sk':'FLOWRUN#'},Limit:50,ScanIndexForward:false}));return reply(200,{items:(data.Items||[]).filter(x=>x.workflowId===id)});}
-  if(method==='PATCH'&&!action){authorize(role,method,'identityAdmin');const body=parse(event);if(typeof body.enabled!=='boolean')return reply(400,{error:'enabled is required'});if(body.recipientUserId&&body.recipientUserId!==userId)return reply(403,{error:'Recipient must be the authenticated user'});const schedule={...got.Item,...body};if(body.time||body.frequency||body.dayOfWeek!==undefined||body.timezone){schedule.nextRunAt=nextFlowRun(schedule);schedule.lastRunAt=got.Item.lastRunAt;}const item={...schedule,enabled:body.enabled,updatedAt:new Date().toISOString(),updatedBy:userId};if(item.enabled&&item.nextRunAt){item.gsi2pk='FLOW#ENABLED';item.gsi2sk=item.nextRunAt;}else{delete item.gsi2pk;delete item.gsi2sk;}await db.send(new PutCommand({TableName:table,Item:item,ConditionExpression:'attribute_exists(pk) AND attribute_exists(sk)'}));return reply(200,item);}
+  if(method==='POST'&&action==='run') { if(got.Item.enabled!==true)return reply(409,{error:'Flow is paused'}); try { const body=event.body?parse(event):{};let runActor={userId,role};if(role==='SERVICE'){if(userId!==got.Item.createdBy) return reply(403,{error:'Service subject does not own this flow'});const [profile,membership]=await Promise.all([db.send(new GetCommand({TableName:table,Key:{pk:prefix,sk:`ITEM#${userId}`}})),db.send(new GetCommand({TableName:table,Key:{pk:prefix,sk:`MEMBERSHIP#${userId}`}}))]);if(profile.Item?.status!=='ACTIVE'||membership.Item?.status!=='ACTIVE'||!['ADMIN','MANAGER'].includes(membership.Item.role))return reply(403,{error:'Flow owner is inactive or no longer authorized'});runActor={userId,role:membership.Item.role};}const recipientUserId=got.Item.createdBy;if(!recipientUserId)throw Object.assign(new Error('Flow recipient is unavailable'),{status:409});const [recipientProfile,recipientMembership]=await Promise.all([db.send(new GetCommand({TableName:table,Key:{pk:prefix,sk:`ITEM#${recipientUserId}`}})),db.send(new GetCommand({TableName:table,Key:{pk:prefix,sk:`MEMBERSHIP#${recipientUserId}`}}))]);if(recipientProfile.Item?.status!=='ACTIVE'||recipientMembership.Item?.status!=='ACTIVE'||!['ADMIN','MANAGER','VIEWER'].includes(recipientMembership.Item.role))throw Object.assign(new Error('Flow recipient is inactive or no longer belongs to this organization'),{status:409});const config={...got.Item,recipientUserId,recipientRole:recipientMembership.Item.role};const result=await flowEngine({tenantId,actor:runActor,workflowId:id,config,event,executionId:body.executionId});return reply(200,result); } catch(error) { const run={pk:prefix,sk:`FLOWRUN#${uuid()}`,workflowId:id,status:'FAILED',errors:[{message:error.message,at:new Date().toISOString()}],createdAt:new Date().toISOString()}; await db.send(new PutCommand({TableName:table,Item:run})); return reply(error.status||502,{error:error.message,executionId:run.sk.slice(8)}); } }
+  if(method==='GET'&&action==='runs'&&!executionId){const data=await db.send(new QueryCommand({TableName:table,KeyConditionExpression:'pk = :pk AND begins_with(sk,:sk)',ExpressionAttributeValues:{':pk':prefix,':sk':'FLOWRUN#'},Limit:50,ScanIndexForward:false}));const runs=(data.Items||[]).filter(x=>x.workflowId===id);return reply(200,{items:role==='ADMIN'?runs:runs.filter(x=>x.recipientUserId===userId)});}
+  if(method==='PATCH'&&!action){authorize(role,method,'identityAdmin');const body=parse(event);const allowed=['name','frequency','time','dayOfWeek','timezone','enabled','budgetThreshold'];if(Object.keys(body).some(field=>!allowed.includes(field)))return reply(400,{error:'Field cannot be changed on an automation.'});if(typeof body.enabled!=='boolean')return reply(400,{error:'enabled is required'});if(body.name!==undefined&&(typeof body.name!=='string'||!body.name.trim()||body.name.length>100))return reply(400,{error:'Invalid automation name'});if(body.budgetThreshold!==undefined&&(!Number.isFinite(body.budgetThreshold)||body.budgetThreshold<0.5||body.budgetThreshold>1.5))return reply(400,{error:'Invalid budget threshold'});const schedule={...got.Item,...body};if(body.time||body.frequency||body.dayOfWeek!==undefined||body.timezone){schedule.nextRunAt=nextFlowRun(schedule);schedule.lastRunAt=got.Item.lastRunAt;}const item={...schedule,enabled:body.enabled,updatedAt:new Date().toISOString(),updatedBy:userId};if(item.enabled&&item.nextRunAt){item.gsi2pk='FLOW#ENABLED';item.gsi2sk=item.nextRunAt;}else{delete item.gsi2pk;delete item.gsi2sk;}await db.send(new PutCommand({TableName:table,Item:item,ConditionExpression:'attribute_exists(pk) AND attribute_exists(sk)'}));return reply(200,item);}
   return reply(404,{error:'Not found'});
 }
 async function notificationsApi(event, actor, method, path) {

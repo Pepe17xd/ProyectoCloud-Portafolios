@@ -59,7 +59,7 @@ provider:
           Resource: ${env:WHATSAPP_QUEUE_ARN, 'arn:aws:sqs:us-east-1:000000000000:placeholder'}
         - Effect: Allow
           Action: [secretsmanager:GetSecretValue]
-          Resource: ${env:WHATSAPP_META_SECRET_ARN, 'arn:aws:secretsmanager:${aws:region}:${aws:accountId}:secret:profiles-whatsapp-*'}
+          Resource: ${env:WHATSAPP_META_SECRET_ARN, 'arn:aws:secretsmanager:${aws:region}:${aws:accountId}:secret:cloudportfolio/whatsapp/${aws:accountId}/${sls:stage}-*'}
 functions:
   # Cognito confirms email; the JWT-protected endpoint completes provisioning.
   api:

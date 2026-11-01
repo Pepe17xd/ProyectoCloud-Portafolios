@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createFlowEngine, createLocalNotificationProvider, createWhatsAppBusinessProvider } from '../services/identity-service/flow-engine.mjs';
+import { buildRecipientFlowReport, createFlowEngine, createLocalNotificationProvider, createWhatsAppBusinessProvider } from '../services/identity-service/flow-engine.mjs';
 import { nextFlowRun, dispatchDueFlows } from '../services/identity-service/flow-scheduler.mjs';
 import { authorize, claims, signLocalServiceToken, signLocalToken } from '../shared/index.mjs';
 
@@ -15,6 +15,21 @@ test('Flow reports pending Decision Lab scenarios for human review only', async 
  const result=await execute({tenantId:'tenant-a',actor:{userId:'manager-a',role:'MANAGER'},workflowId:'w1',config:{type:'weekly-summary'}});
  assert.deepEqual(result.report.pendingDecisionScenarios,[{id:'scenario-1',name:'Review spend',scope:{projectId:'p1'},createdAt:'2026-10-31',status:'PENDING_REVIEW'}]);
  assert.match(result.report.explanation,/nunca se aprueban|aplican autom/i);
+});
+
+test('ADMIN and USER WhatsApp reports are individualized and expose only their authorized scope', () => {
+ const source={projects:[{id:'p-admin',status:'ACTIVE'},{id:'p-user',status:'ACTIVE',ownerId:'user-b',portfolioId:'port-user'},{id:'p-other',status:'ACTIVE'}],portfolios:[{id:'port-user'},{id:'port-other'}],tasks:[{id:'t-user',projectId:'p-user',assigneeId:'user-b',dueDate:'2026-11-03',status:'OPEN'},{id:'t-other',projectId:'p-other',assigneeId:'user-c',dueDate:'2026-11-03',status:'OPEN'}],budgets:[{id:'budget-private',allocated:100,spent:90}],resources:[{id:'resource-private'}],priorities:[{id:'priority-private'}],pendingDecisionScenarios:[{id:'scenario-private',scope:{projectId:'p-admin'}}]};
+ const alerts=[{kind:'TASK_OVERDUE',entityId:'t-user'},{kind:'BUDGET_THRESHOLD',entityId:'budget-private'},{kind:'PROJECT_OVERDUE',entityId:'p-other'}];
+ const admin=buildRecipientFlowReport({role:'ADMIN',userId:'admin-a',source,alerts,workflowId:'flow',executionId:'admin-run',now:new Date('2026-11-01T12:00:00Z')});
+ assert.equal(admin.report.scope,'organization');assert.equal(admin.report.counts.budgets,1);assert.equal(admin.report.alerts.length,3);assert.deepEqual(admin.parameters,['3']);
+ const user=buildRecipientFlowReport({role:'VIEWER',userId:'user-b',source,alerts,workflowId:'flow',executionId:'user-run',now:new Date('2026-11-01T12:00:00Z')});
+ assert.equal(user.report.scope,'assigned-work');assert.equal(user.report.recipientRole,'USER');assert.deepEqual(user.report.counts,{projects:1,portfolios:1,tasks:1,budgets:0,resources:0,priorities:0,pendingDecisionScenarios:0});assert.deepEqual(user.report.alerts,[alerts[0]]);assert.deepEqual(user.report.dueTasks,['t-user']);assert.deepEqual(user.parameters,['1']);
+ assert.doesNotMatch(JSON.stringify(user.report),/budget-private|resource-private|priority-private|scenario-private|p-other/);
+});
+
+test('manager receives organization-level report within the existing read permissions',()=>{
+ const result=buildRecipientFlowReport({role:'MANAGER',userId:'manager-a',source:{projects:[{id:'p1'}],tasks:[{id:'task1',projectId:'p1',assigneeId:'manager-a'}],budgets:[{id:'budget1',allocated:5,spent:2}]},alerts:[],workflowId:'f',executionId:'e'});
+ assert.equal(result.report.scope,'organization');assert.equal(result.report.counts.projects,1);assert.equal(result.report.counts.tasks,1);assert.equal(result.report.counts.budgets,1);
 });
 test('flow engine rejects unauthorized roles and arbitrary/missing tenant context',async()=>{
  const execute=createFlowEngine({monitor:async()=>({}),persist:async()=>{}});
