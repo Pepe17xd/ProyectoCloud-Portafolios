@@ -1,9 +1,11 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, ArrowDownRight, ArrowRight, ArrowUpDown, BarChart3, Bell, BriefcaseBusiness, CalendarDays, ChartNoAxesCombined, Check, ChevronRight, CircleDollarSign, Eye, EyeOff, FileBarChart, FolderKanban, Layers, LogOut, Menu, MessageCircle, Plus, RefreshCw, Search, ShieldCheck, Sparkles, Target, Users, Wallet, Workflow, X, ListTodo, ReceiptText, UserPlus, Trophy } from 'lucide-react';
+import { Activity, ArrowRight, ArrowUpDown, BarChart3, BriefcaseBusiness, CalendarDays, Check, Copy, FileBarChart, FolderKanban, Layers, Plus, ReceiptText, RefreshCw, Search, Sparkles, Target, UserPlus, Users, Wallet, Workflow, X } from 'lucide-react';
 import { localAuth, request } from '../../api/client';
 import { getCurrentCognitoUser, signOutFromCognito } from '../../auth/cognito';
 import TopNav from './TopNav';
 import PageHeader from '../../components/PageHeader';
+import Modal from '../../components/Modal';
+import { formatCurrency, formatDate, isDateOverdue, StatusBadge, UserAvatar } from '../../components/StatusBadge';
 import { navigate, usePathname } from '../../hooks/navigation';
 import '../../style.css';
 import './workspace-premium.css';
@@ -22,11 +24,134 @@ const modules: Module[] = [
   { key: 'identity', path: 'users', title: 'Usuarios', icon: Users, fields: ['name', 'email', 'role', 'status'], required: ['name'] },
 ];
 
-const fieldLabels: Record<string,string> = { name:'Nombre', description:'Descripción', ownerId:'Responsable (ID)', status:'Estado', portfolioId:'Portafolio (ID)', projectId:'Proyecto (ID)', startDate:'Fecha de inicio', endDate:'Fecha de cierre', type:'Tipo', capacity:'Capacidad', allocated:'Asignado', spent:'Gastado', currency:'Moneda', impact:'Impacto', urgency:'Urgencia', risk:'Riesgo', alignment:'Alineacion', email:'Correo', role:'Rol' };
+const fieldLabels: Record<string, string> = {
+  name: 'Nombre',
+  description: 'Descripción',
+  ownerId: 'Responsable (ID)',
+  status: 'Estado',
+  portfolioId: 'Portafolio (ID)',
+  projectId: 'Proyecto (ID)',
+  startDate: 'Fecha de inicio',
+  endDate: 'Fecha de cierre',
+  type: 'Tipo',
+  capacity: 'Capacidad',
+  allocated: 'Asignado',
+  spent: 'Gastado',
+  currency: 'Moneda',
+  impact: 'Impacto',
+  urgency: 'Urgencia',
+  risk: 'Riesgo',
+  alignment: 'Alineación',
+  email: 'Correo',
+  role: 'Rol',
+  resourceId: 'Recurso',
+  allocation: 'Asignación',
+  amount: 'Importe',
+  createdAt: 'Fecha de registro',
+  rank: 'Posición',
+  score: 'Puntaje',
+};
 const fieldLabel = (field: string) => fieldLabels[field] || field;
 function itemId(item: Item) { return typeof item.sk === 'string' ? item.sk.replace(/^ITEM#/, '') : ''; }
-function DataTable({ title, rows, fields }: { title: string; rows: Item[]; fields: string[] }) { return <section className="panel"><h2>{title}</h2><div className="tableWrap"><table><thead><tr>{fields.map(f=><th key={f}>{f}</th>)}</tr></thead><tbody>{rows.map((row,i)=><tr key={itemId(row)||i}>{fields.map(f=><td key={f}>{readable(row[f])}</td>)}</tr>)}</tbody></table>{!rows.length&&<div className="empty">No hay registros todavía.</div>}</div></section>; }
 function readable(value: unknown) { return value === undefined || value === null || value === '' ? '—' : String(value); }
+
+function renderFormattedCell(field: string, row: Item) {
+  const val = row[field];
+  if (val === undefined || val === null || val === '') return <span className="muted-cell">—</span>;
+  if (field === 'status' || field === 'role') {
+    return <StatusBadge value={val} />;
+  }
+  if (field === 'ownerId' || field === 'resourceId') {
+    return <UserAvatar name={val} />;
+  }
+  if (field === 'allocated' || field === 'spent' || field === 'amount') {
+    return <span className="currency-cell">{formatCurrency(val, row.currency)}</span>;
+  }
+  if (field === 'allocation') {
+    const pct = Number(val) <= 1 ? Math.round(Number(val) * 100) : Math.round(Number(val));
+    return (
+      <div className="inline-meter">
+        <div className="inline-meter-track">
+          <span className="inline-meter-fill" style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
+        </div>
+        <span>{Number.isFinite(pct) ? `${pct}%` : readable(val)}</span>
+      </div>
+    );
+  }
+  if (['score', 'impact', 'urgency', 'risk', 'alignment'].includes(field)) {
+    const num = Number(val);
+    if (Number.isFinite(num)) {
+      const tone = field === 'risk' ? (num > 70 ? 'rose' : num > 40 ? 'amber' : 'emerald') : num >= 70 ? 'emerald' : num >= 40 ? 'sky' : 'amber';
+      return (
+        <div className="inline-meter">
+          <div className="inline-meter-track">
+            <span className={`inline-meter-fill fill-${tone}`} style={{ width: `${Math.min(100, Math.max(0, num))}%` }} />
+          </div>
+          <strong>{num}</strong>
+        </div>
+      );
+    }
+  }
+  if (field.endsWith('Date') || field === 'createdAt' || field === 'updatedAt') {
+    const overdue = field === 'endDate' && isDateOverdue(val, row.status);
+    return (
+      <span className={`date-cell ${overdue ? 'date-overdue' : ''}`}>
+        {formatDate(val)}
+        {overdue && <span className="overdue-pill">Vencido</span>}
+      </span>
+    );
+  }
+  return readable(val);
+}
+
+function CopyIdBadge({ id }: { id: string }) {
+  const [copied, setCopied] = useState(false);
+  if (!id) return <span className="muted-cell">—</span>;
+  const short = id.slice(0, 12);
+  return (
+    <button
+      type="button"
+      className="copy-id-btn"
+      title={`Copiar ID: ${id}`}
+      onClick={() => {
+        void navigator.clipboard?.writeText(id);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1400);
+      }}
+    >
+      <span>{short}</span>
+      {copied ? <Check size={12} /> : <Copy size={12} />}
+    </button>
+  );
+}
+
+function DataTable({ title, rows, fields }: { title: string; rows: Item[]; fields: string[] }) {
+  return (
+    <section className="panel">
+      <div className="panelHeading">
+        <div>
+          <h2>{title}</h2>
+          <span>{rows.length} registros visibles</span>
+        </div>
+      </div>
+      <div className="tableWrap">
+        <table>
+          <thead>
+            <tr>{fields.map(f => <th key={f}>{fieldLabel(f)}</th>)}</tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={itemId(row) || i}>
+                {fields.map(f => <td key={f}>{renderFormattedCell(f, row)}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!rows.length && <div className="empty">No hay registros todavía.</div>}
+      </div>
+    </section>
+  );
+}
 
 function NotificationCenter() {
   const [prefs, setPrefs] = useState<any>({ enabled: false, timezone: 'America/Lima', allowedHours: { start: '08:00', end: '18:00' }, frequency: 'immediate', alertTypes: [], whatsappConsent: false });
@@ -45,18 +170,6 @@ function NotificationCenter() {
   const statusLabels:Record<string,string> = { unavailable:'WhatsApp todavía no está disponible', 'not-configured':'Sin configurar','pending-verification':'Verificación pendiente',active:'Activo','verified-test':'Verificación solo de prueba',revoked:'Desactivado' };
   const deliveryLabels:Record<string,string> = { REQUESTED:'Solicitado',ACCEPTED_BY_META:'Aceptado por el proveedor',SENT:'Enviado',DELIVERED:'Entregado',READ:'Leído',FAILED:'Fallido',BLOCKED:'Bloqueado',UNAVAILABLE:'No disponible',UNKNOWN:'Estado por confirmar' };
   return <section className="panel notification-panel"><div className="panelHeading"><div><h2>Notificaciones</h2><span>El buzón interno sigue disponible aunque WhatsApp no lo esté.</span></div><span className="mode-chip">{whatsapp.providerAvailable?(statusLabels[whatsapp.status]||whatsapp.status):'WhatsApp no disponible'}</span></div><form className="notification-form" onSubmit={save}><label className="check-label"><input type="checkbox" checked={Boolean(prefs.enabled)} onChange={e=>setPrefs({...prefs,enabled:e.target.checked})}/> Activar alertas en el buzón interno</label><div className="notification-options"><label>Zona horaria<input value={prefs.timezone||'America/Lima'} onChange={e=>setPrefs({...prefs,timezone:e.target.value})}/></label><label>Horario desde<input type="time" value={prefs.allowedHours?.start||'08:00'} onChange={e=>setPrefs({...prefs,allowedHours:{...prefs.allowedHours,start:e.target.value}})}/></label><label>Hasta<input type="time" value={prefs.allowedHours?.end||'18:00'} onChange={e=>setPrefs({...prefs,allowedHours:{...prefs.allowedHours,end:e.target.value}})}/></label></div><fieldset><legend>Eventos para el buzón interno</legend><div className="notification-types">{types.map(type=><label className="check-label" key={type}><input type="checkbox" checked={(prefs.alertTypes||[]).includes(type)} onChange={e=>setPrefs({...prefs,alertTypes:e.target.checked?[...new Set([...(prefs.alertTypes||[]),type])]:prefs.alertTypes.filter((x:string)=>x!==type)})}/>{type}</label>)}</div></fieldset><button className="secondary" disabled={busy}>Guardar preferencias</button></form><div className="notification-whatsapp"><div className="whatsapp-intro"><span className="whatsapp-label">CANAL DE RECORDATORIOS</span><h3>Recibe recordatorios por WhatsApp</h3><p>Elige qué avisos quieres recibir y mantén el control de tu consentimiento.</p></div><div className="whatsapp-status-grid" aria-label="Estado de WhatsApp"><div><span>Disponibilidad</span><strong>{whatsapp.providerAvailable ? 'Proveedor configurado' : 'No disponible'}</strong></div><div><span>Consentimiento</span><strong>{whatsapp.consent ? 'Aceptado' : 'No otorgado'}</strong></div><div><span>Verificación</span><strong>{whatsapp.status === 'active' ? 'Verificado' : whatsapp.status === 'verified-test' ? 'Solo prueba local' : whatsapp.status === 'pending-verification' ? 'Pendiente' : 'Sin verificar'}</strong></div><div><span>Número registrado</span><strong>{whatsapp.whatsappNumber ? '•••• ' + whatsapp.whatsappNumber.slice(-4) : 'Sin registrar'}</strong></div></div><p>{whatsapp.providerAvailable?'Al activarlo recibirás un código para confirmar que controlas el número.':'El canal requiere una configuración válida del proveedor y plantillas aprobadas. El buzón interno no depende de esta configuración.'}</p>{!whatsapp.providerAvailable?<p role="status">WhatsApp todavía no está disponible. Puedes seguir usando las notificaciones internas.</p>:<><form className="notification-form" onSubmit={saveWhatsappPreferences}><div className="notification-options"><label>Número de teléfono internacional<input aria-label="Número de teléfono internacional" inputMode="tel" autoComplete="tel" placeholder="+51987654321" value={whatsapp.status==='active' ? '•••• ' + phone.slice(-4) : phone} onChange={e=>setPhone(e.target.value)} disabled={whatsapp.status==='active'}/></label><label className="check-label"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)} disabled={whatsapp.status==='active'}/> Acepto recibir recordatorios por WhatsApp. Puedo desactivarlos cuando quiera.</label></div>{whatsapp.status!=='active'&&<button className="secondary" type="button" disabled={busy||!consent||!phone} onClick={()=>void startVerification()}>Activar WhatsApp y enviar código</button>}{whatsapp.status==='pending-verification'&&<div className="notification-actions"><label>Código recibido<input inputMode="numeric" maxLength={6} value={code} onChange={e=>setCode(e.target.value)}/></label><button className="secondary" type="button" disabled={busy||code.length!==6} onClick={()=>void confirm()}>Verificar mi número</button><button className="textButton" type="button" disabled={busy} onClick={()=>void startVerification()}>Enviar código nuevamente</button></div>}{whatsapp.status==='active'&&<><fieldset><legend>Qué mensajes quieres recibir</legend><div className="notification-types">{whatsappTypes.map(type=><label className="check-label" key={type}><input type="checkbox" checked={(whatsapp.alertTypes||[]).includes(type)} onChange={e=>setWhatsapp({...whatsapp,alertTypes:e.target.checked?[...new Set([...(whatsapp.alertTypes||[]),type])]:whatsapp.alertTypes.filter((x:string)=>x!==type)})}/>{whatsappLabels[type]}</label>)}</div></fieldset><button className="secondary">Guardar recordatorios</button></>}</form>{whatsapp.status==='active'&&<button className="textButton" disabled={busy} onClick={()=>void revoke()}>Desactivar WhatsApp y eliminar número</button>}</>}{whatsapp.status==='verified-test'&&<p role="status">Verificación simulada localmente; no se considera verificación real del número.</p>}{message&&<p className="assistant-state" role="status">{message}</p>}<div className="notification-inbox"><h3>Últimos envíos</h3>{whatsapp.items?.length?whatsapp.items.map((item:any)=><article key={item.eventId||item.id}><b>{item.title||item.eventType}</b><span>{deliveryLabels[item.deliveryStatus]||item.deliveryStatus}</span></article>):<p>Aún no hay mensajes por este canal.</p>}</div></div><div className="notification-inbox"><h3>Buzón interno</h3>{inbox.length?inbox.slice(0,8).map((item:any)=><article key={item.eventId}><b>{item.title}</b><span>{item.createdAt}</span></article>):<p>No hay notificaciones para esta cuenta.</p>}</div></section>;
-}
-
-function OrbitalActionsPanel() {
-  const [text, setText] = useState('Recuérdame revisar el presupuesto mañana a las 09:00'); const [recurrence, setRecurrence] = useState('ONCE');
-  const [proposal, setProposal] = useState<any>(null); const [items, setItems] = useState<any[]>([]); const [actions, setActions] = useState<any[]>([]); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
-  const load = useCallback(async () => { const [r, a] = await Promise.all([request<any>('identity', 'reminders'), request<any>('identity', 'intelligence/actions')]); setItems(r.items || []); setActions(a.items || []); }, []);
-  useEffect(() => { void load().catch((e) => setMessage(e instanceof Error ? e.message : String(e))); }, [load]);
-  async function propose(e: React.FormEvent) { e.preventDefault(); setBusy(true); setProposal(null); setMessage(''); try { const result = await request<any>('identity', 'intelligence/proposals', 'POST', { text, recurrence, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Lima' }); setProposal(result.proposal); } catch (e) { setMessage(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }
-  async function confirmProposal() { if (!proposal) return; setBusy(true); try { const operationId = crypto.randomUUID(); const result = await request<any>('identity', `intelligence/actions/${encodeURIComponent(proposal.id)}/confirm`, 'POST', { operationId }); setMessage(proposal.kind==='TASK_CREATE'?`Tarea creada: ${result.task.title}`:`Recordatorio persistido: ${result.reminder.title}`); setProposal(null); await load(); } catch (e) { setMessage(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }
-  async function setStatus(item: any, status: string) { setBusy(true); try { await request('identity', `reminders/${encodeURIComponent(item.id)}`, 'PATCH', { status }); await load(); } catch (e) { setMessage(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }
-  async function cancel(item: any) { setBusy(true); try { await request('identity', `reminders/${encodeURIComponent(item.id)}`, 'DELETE'); await load(); } catch (e) { setMessage(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }
-  return <section className="panel orbital-actions"><div className="panelHeading"><div><h2><CalendarDays size={18}/> Acciones y recordatorios</h2><span>El modo local entiende plantillas limitadas y pide confirmación antes de escribir.</span></div><span className="mode-chip">REGLAS DETERMINISTAS</span></div><form className="assistant-form" onSubmit={propose}><label className="sr-only" htmlFor="reminder-prompt">Solicitud para ProFiles</label><input id="reminder-prompt" maxLength={300} value={text} onChange={e=>setText(e.target.value)} aria-describedby="reminder-format"/><label className="sr-only" htmlFor="reminder-recurrence">Frecuencia del recordatorio</label><select id="reminder-recurrence" value={recurrence} onChange={e=>setRecurrence(e.target.value)}><option value="ONCE">Una vez</option><option value="DAILY">Diario</option><option value="WEEKLY">Semanal</option></select><button className="primary" disabled={busy}>{busy?'Interpretando…':'Proponer'}</button></form><small id="reminder-format">Recordatorio: “Recuérdame revisar el proyecto mañana a las 09:00”. Tarea: Crear tarea "Preparar cronograma" en proyecto &lt;ID&gt;. Se usa tu zona horaria: {Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Lima'}.</small>{proposal&&<article className="action-proposal"><b>Propuesta pendiente de confirmación · {proposal.kind==='TASK_CREATE'?'Crear tarea':'Crear recordatorio'}</b><span>{proposal.title}{proposal.projectName?` · proyecto ${proposal.projectName}`:''}{proposal.dueAt?` · ${new Date(proposal.dueAt).toLocaleString()} · ${proposal.recurrence}`:''}</span><button className="primary" disabled={busy} onClick={()=>void confirmProposal()}>{proposal.kind==='TASK_CREATE'?'Confirmar y crear tarea':'Confirmar y programar'}</button><button className="textButton" disabled={busy} onClick={()=>setProposal(null)}>Descartar</button></article>}{message&&<p className="assistant-state" role="status">{message}</p>}<div className="orbital-reminder-list"><h3>Recordatorios e historial</h3>{items.length?items.map(item=><article key={item.id}><div><b>{item.title}</b><span>{new Date(item.dueAt).toLocaleString()} · {item.recurrence} · {item.status}</span></div>{item.status==='SCHEDULED'?<button className="textButton" disabled={busy} onClick={()=>void setStatus(item,'PAUSED')}>Pausar</button>:item.status==='PAUSED'?<button className="textButton" disabled={busy} onClick={()=>void setStatus(item,'SCHEDULED')}>Reanudar</button>:null}{['SCHEDULED','PAUSED'].includes(item.status)&&<button className="textButton" disabled={busy} onClick={()=>void cancel(item)}>Cancelar</button>}</article>):<p>No hay recordatorios. Las entregas aparecerán en el buzón local cuando venza la fecha.</p>}</div><details className="orbital-action-history"><summary>Historial de propuestas ({actions.length})</summary>{actions.map(item=><article key={item.id}><b>{item.title}</b><span>{item.status} · {item.confirmedAt||item.createdAt}</span></article>)}</details><small>Entrega local persistente: “Simulado localmente — No enviado a WhatsApp”.</small></section>;
 }
 
 function FlowPanel() {
@@ -81,7 +194,14 @@ function ReportsPanel() {
 export function Workspace() {
   const [user, setUser] = useState(''); const [refreshToken, setRefreshToken] = useState(0);
   const [assistantQuestion, setAssistantQuestion] = useState(''); const [assistantAnswer, setAssistantAnswer] = useState<any>(null); const [assistantBusy, setAssistantBusy] = useState(false);
-  const [mobileNavOpen,setMobileNavOpen]=useState(false); const appPath=usePathname(); const routeTabs:Record<string,string>={portfolios:'portfolio',projects:'project',resources:'resource',budgets:'budget',priorities:'priority',decisions:'decisionlab',automations:'automations',notifications:'notifications',reports:'reports',assistant:'assistant',consulta:'assistant',users:'identity',tasks:'tasks',assignments:'assignments',expenses:'expenses',rankings:'rankings'}; const tabRoutes:Record<string,string>={dashboard:'/app',portfolio:'/app/portfolios',project:'/app/projects',resource:'/app/resources',budget:'/app/budgets',priority:'/app/priorities',identity:'/app/users',tasks:'/app/tasks',assignments:'/app/assignments',expenses:'/app/expenses',rankings:'/app/rankings',decisionlab:'/app/decisions',automations:'/app/automations',notifications:'/app/notifications',reports:'/app/reports',assistant:'/app/consulta'}; const initialSegment=window.location.pathname.split('/')[2]||''; const [tab,setTab]=useState(routeTabs[initialSegment]||'dashboard'); function selectTab(next:string){setTab(next);setMobileNavOpen(false);const route=tabRoutes[next]||'/app';if(window.location.pathname!==route)navigate(route);} useEffect(()=>{const segment=appPath.split('/')[2]||'';setTab(routeTabs[segment]||'dashboard');},[appPath]); const [items, setItems] = useState<Item[]>([]); const [form, setForm] = useState<Record<string, string>>({});
+  const [, setMobileNavOpen] = useState(false); const appPath = usePathname();
+  const routeTabs: Record<string, string> = { portfolios: 'portfolio', projects: 'project', resources: 'resource', budgets: 'budget', priorities: 'priority', decisions: 'decisionlab', automations: 'automations', notifications: 'notifications', reports: 'reports', assistant: 'assistant', consulta: 'assistant', users: 'identity', tasks: 'tasks', assignments: 'assignments', expenses: 'expenses', rankings: 'rankings' };
+  const tabRoutes: Record<string, string> = { dashboard: '/app', portfolio: '/app/portfolios', project: '/app/projects', resource: '/app/resources', budget: '/app/budgets', priority: '/app/priorities', identity: '/app/users', tasks: '/app/tasks', assignments: '/app/assignments', expenses: '/app/expenses', rankings: '/app/rankings', decisionlab: '/app/decisions', automations: '/app/automations', notifications: '/app/notifications', reports: '/app/reports', assistant: '/app/consulta' };
+  const initialSegment = window.location.pathname.split('/')[2] || '';
+  const [tab, setTab] = useState(routeTabs[initialSegment] || 'dashboard');
+  function selectTab(next: string) { setTab(next); setMobileNavOpen(false); const route = tabRoutes[next] || '/app'; if (window.location.pathname !== route) navigate(route); }
+  useEffect(() => { const segment = appPath.split('/')[2] || ''; setTab(routeTabs[segment] || 'dashboard'); }, [appPath]);
+  const [items, setItems] = useState<Item[]>([]); const [form, setForm] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState<Item | null>(null); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false); const [cursor, setCursor] = useState<string | null>(null); const [search, setSearch] = useState('');
   const [overview, setOverview] = useState<Record<string, Item[]>>({});
   const [overviewErrors, setOverviewErrors] = useState<string[]>([]);
@@ -94,6 +214,7 @@ export function Workspace() {
   const pageTitles: Record<string, string> = { tasks: 'Tablero Kanban', assignments: 'Asignaciones', expenses: 'Gastos', rankings: 'Ranking', decisionlab: 'Decision Lab', automations: 'Automatizaciones', notifications: 'Notificaciones', reports: 'Reportes', assistant: 'Consulta de informaci\u00f3n' };
   const pageDescriptions: Record<string, string> = { dashboard: 'Proyectos, pendientes y decisiones en un mismo lugar.', automations: 'Programa y revisa el seguimiento de tu organización.', notifications: 'Consulta las notificaciones de tu usuario.', reports: 'Genera y descarga reportes del alcance autorizado.', assistant: 'Consulta hechos de las APIs de tu organización.' };
   const activeTitle = active?.title || pageTitles[tab] || tab;
+
   useEffect(() => {
     if (localAuth) { const stored = localStorage.getItem('cloudportfolio.user'); if (stored) { try { setUser(JSON.parse(stored).email); } catch { localStorage.removeItem('cloudportfolio.user'); } } }
     else getCurrentCognitoUser().then(u => setUser(u.username)).catch(() => undefined);
@@ -106,6 +227,7 @@ export function Workspace() {
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   }, [active]);
+
   const loadOverview = useCallback(async () => {
     setBusy(true); setError('');
     const results = await Promise.allSettled(modules.map(async m => [m.key, (await request<{ items: Item[] }>(m.key, m.path)).items] as const));
@@ -113,7 +235,9 @@ export function Workspace() {
     results.forEach((result, index) => { if (result.status === 'fulfilled') available[result.value[0]] = result.value[1] || []; else unavailable.push(modules[index].title); });
     setOverview(available); setOverviewErrors(unavailable); setBusy(false);
   }, []);
-  useEffect(() => { if (!user) return; setSearch(''); if (dashboard) void loadOverview(); else void load(); }, [user, tab, dashboard, load, loadOverview, refreshToken]);
+
+  useEffect(() => { if (!user) return; setSearch(''); setFormOpen(false); if (dashboard) void loadOverview(); else void load(); }, [user, tab, dashboard, load, loadOverview, refreshToken]);
+
   useEffect(() => {
     if (!user) return;
     const rows = async (module: string, path: string) => (await request<{ items: Item[] }>(module, path)).items || [];
@@ -122,15 +246,17 @@ export function Workspace() {
     if (tab === 'expenses') void Promise.all([rows('budget', 'budgets'), rows('budget', 'expenses'), rows('project', 'projects')]).then(([b, x, p]) => { setBudgetRows(b.filter(i => i.entityType !== 'Expense')); setExpenseRows(x); setProjectRows(p); }).catch(e => setError(String(e)));
     if (tab === 'rankings') { void request<{ items: Item[] }>('priority', 'rankings').then(data => setRankingRows(data.items || [])).catch(e => setError(String(e))); void rows('project', 'projects').then(setProjectRows).catch(e => setError(String(e))); }
   }, [user, tab, refreshToken]);
+
   useEffect(() => { if (!taskProject || tab !== 'tasks') return; void request<{ items: Item[] }>('project', `projects/${encodeURIComponent(taskProject)}/tasks`).then(data => setTasks(data.items || [])).catch(e => setError(String(e))); }, [taskProject, tab, refreshToken]);
 
   useEffect(() => {
     if (!user || !active) return;
     const refs = [{ field: 'portfolioId', module: 'portfolio', path: 'portfolios' }, { field: 'projectId', module: 'project', path: 'projects' }, { field: 'ownerId', module: 'identity', path: 'users' }].filter(ref => active.fields.includes(ref.field));
     let live = true; setReferenceOptions({});
-    void Promise.allSettled(refs.map(async ref => [ref.field, (await request<{items: Item[]}>(ref.module, ref.path)).items || []] as const)).then(results => { if (!live) return; setReferenceOptions(Object.fromEntries(results.filter((r): r is PromiseFulfilledResult<readonly [string, Item[]]> => r.status === 'fulfilled').map(r => r.value))); });
+    void Promise.allSettled(refs.map(async ref => [ref.field, (await request<{ items: Item[] }>(ref.module, ref.path)).items || []] as const)).then(results => { if (!live) return; setReferenceOptions(Object.fromEntries(results.filter((r): r is PromiseFulfilledResult<readonly [string, Item[]]> => r.status === 'fulfilled').map(r => r.value))); });
     return () => { live = false; };
   }, [user, active]);
+
   function startCreate() { setEditing(null); setForm({}); setNotice(''); setFormOpen(true); }
   function startEdit(item: Item) { setFormOpen(true); const values: Record<string, string> = {}; active?.fields.forEach(field => { values[field] = item[field] == null ? '' : String(item[field]); }); setEditing(item); setForm(values); setNotice(''); }
   async function save(e: React.FormEvent) { e.preventDefault(); if (!active) return; setBusy(true); setError(''); setNotice('');
@@ -148,35 +274,213 @@ export function Workspace() {
   async function createExpense(e: React.FormEvent) { e.preventDefault(); const budget = budgetRows.find(b => itemId(b) === expenseForm.budgetId); if (!budget) return; setBusy(true); setError(''); try { await request('budget', 'expenses', 'POST', { budgetId: expenseForm.budgetId, projectId: String(budget.projectId), description: expenseForm.description, amount: Number(expenseForm.amount), currency: expenseForm.currency }); const [expenses, budgets] = await Promise.all([request<any>('budget', 'expenses'), request<any>('budget', 'budgets')]); setExpenseRows(expenses.items || []); setBudgetRows((budgets.items || []).filter((x: Item) => x.entityType !== 'Expense')); setExpenseForm({ ...expenseForm, description: '', amount: '' }); setNotice('Gasto registrado.'); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
   async function recalculatePriority(e: React.FormEvent) { e.preventDefault(); setBusy(true); setError(''); try { await request('priority', 'priorities/recalculate', 'POST', { ...priorityForm, impact: Number(priorityForm.impact), urgency: Number(priorityForm.urgency), risk: Number(priorityForm.risk), alignment: Number(priorityForm.alignment) }); const data = await request<{ items: Item[] }>('priority', 'rankings'); setRankingRows(data.items || []); setNotice('Prioridad recalculada y ranking actualizado.'); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
   async function askAssistant(question = assistantQuestion) { if (!question.trim()) return; setAssistantBusy(true); setAssistantAnswer(null); try { setAssistantAnswer(await request('project', 'intelligence/ask', 'POST', { question })); } catch (e) { setAssistantAnswer({ error: e instanceof Error ? e.message : String(e) }); } finally { setAssistantBusy(false); } }
-  const specialView = tab === 'decisionlab' ? <Suspense fallback={<div className="route-loading" role="status">Cargando Decision Lab?</div>}><DecisionLab request={request}/></Suspense> : tab === 'automations' ? <FlowPanel/> : tab === 'notifications' ? <NotificationCenter/> : tab === 'reports' ? <ReportsPanel/> : tab === 'assistant' ? <section className="panel intelligence-panel" id="astra-intelligence"><div className="panelHeading"><div><h2><Sparkles size={18}/> ProFiles Insights</h2><span>Consultas de solo lectura sobre APIs autorizadas de tu organización.</span></div><span className="mode-chip">REGLAS DETERMINISTAS</span></div><form className="assistant-form" onSubmit={e=>{e.preventDefault();void askAssistant();}}><label className="sr-only" htmlFor="assistant-question">Pregunta para Inteligencia ProFiles</label><input id="assistant-question" maxLength={500} value={assistantQuestion} onChange={e=>setAssistantQuestion(e.target.value)} placeholder="¿Qué proyectos están atrasados?"/><button className="primary" disabled={assistantBusy||!assistantQuestion.trim()}>{assistantBusy?'Consultando…':<>Consultar <ArrowRight size={15}/></>}</button></form><div className="assistant-prompts">{['¿Qué proyectos están atrasados?','¿Qué presupuesto está cerca de agotarse?','Resume mis prioridades'].map(q=><button key={q} onClick={()=>{setAssistantQuestion(q);void askAssistant(q);}}>{q}</button>)}</div>{assistantBusy&&<p className="assistant-state" role="status">Consultando las APIs de dominio con tu sesión…</p>}{assistantAnswer?.error&&<p className="error assistant-state" role="alert">{assistantAnswer.error}</p>}{assistantAnswer&&!assistantAnswer.error&&<div className="assistant-answer"><strong>Hechos consultados</strong><ul>{assistantAnswer.facts.map((fact:string,i:number)=><li key={i}>{fact}</li>)}</ul><strong>Sugerencias (no ejecutan cambios)</strong><ul>{assistantAnswer.suggestions.map((item:string,i:number)=><li key={i}>{item}</li>)}</ul>{assistantAnswer.relatedProjects?.length>0&&<><strong>Proyectos relacionados</strong><ul>{assistantAnswer.relatedProjects.map((item:any)=><li key={item.id}><a href="/app/projects">{item.name || item.id}</a> · {item.status} · cierre {item.endDate}</li>)}</ul></>}{assistantAnswer.relatedTasks?.length>0&&<><strong>Tareas para revisar</strong><ul>{assistantAnswer.relatedTasks.map((item:any)=><li key={item.id}><a href="/app/projects">{item.title || item.id}</a> · vence {item.dueDate}</li>)}</ul></>}<small>Alcance: primera página de hasta 100 resultados por dominio. {assistantAnswer.unavailable.length?`Servicios no disponibles: ${assistantAnswer.unavailable.join(', ')}.`:''}</small></div>}</section> : tab === 'tasks' ? <><section className="panel"><h2>Tablero Kanban</h2><select value={taskProject} onChange={e=>setTaskProject(e.target.value)}><option value="">Selecciona proyecto</option>{taskProjects.map(p=><option key={itemId(p)} value={itemId(p)}>{readable(p.name)}</option>)}</select><form className="create" onSubmit={createTask}><label>Nueva tarea<input required maxLength={180} value={taskTitle} onChange={e=>setTaskTitle(e.target.value)} placeholder="Ej. Preparar cronograma"/></label><label>Fecha de vencimiento<input type="date" value={taskDueDate} onChange={e=>setTaskDueDate(e.target.value)}/></label><label>Responsable<select value={taskAssignee} onChange={e=>setTaskAssignee(e.target.value)}><option value="">Sin asignar</option>{teamMembers.map(m=><option key={itemId(m)} value={itemId(m)}>{readable(m.name || m.email)}</option>)}</select></label><button disabled={busy||!taskProject}><Plus size={16}/>Crear</button></form></section><div className="kanban">{[['TODO','Por hacer'],['IN_PROGRESS','En progreso'],['BLOCKED','Bloqueadas'],['DONE','Completadas']].map(([s,t])=><section className="kanbanColumn" key={s}><h2>{t}<span>{tasks.filter(x=>x.status===s).length}</span></h2>{tasks.filter(x=>x.status===s).map(x=><article className="taskCard" key={String(x.id)}><strong>{readable(x.title)}</strong><select value={String(x.status)} onChange={e=>void moveTask(x,e.target.value)}>{['TODO','IN_PROGRESS','BLOCKED','DONE'].map(v=><option key={v}>{v}</option>)}</select></article>)}</section>)}</div></> : tab === 'assignments' ? <><section className="panel"><h2>Asignar recurso a proyecto</h2><form className="create" onSubmit={createAssignment}><label>Recurso<select required value={assignmentForm.resourceId} onChange={e=>setAssignmentForm({...assignmentForm,resourceId:e.target.value})}><option value="">Selecciona</option>{resourceRows.map(x=><option key={itemId(x)} value={itemId(x)}>{readable(x.name)}</option>)}</select></label><label>Proyecto<select required value={assignmentForm.projectId} onChange={e=>setAssignmentForm({...assignmentForm,projectId:e.target.value})}><option value="">Selecciona</option>{projectRows.map(x=><option key={itemId(x)} value={itemId(x)}>{readable(x.name)}</option>)}</select></label><label>Asignación (%)<input type="number" min="1" max="100" value={Number(assignmentForm.allocation)*100} onChange={e=>setAssignmentForm({...assignmentForm,allocation:String(Number(e.target.value)/100)})}/></label><button disabled={busy}><UserPlus size={16}/>Asignar</button></form></section><DataTable title="Asignaciones" rows={assignmentRows} fields={['resourceId','projectId','allocation','startDate','endDate']}/></> : tab === 'expenses' ? <><section className="panel"><h2>Registrar gasto</h2><form className="create" onSubmit={createExpense}><label>Presupuesto<select required value={expenseForm.budgetId} onChange={e=>setExpenseForm({...expenseForm,budgetId:e.target.value})}><option value="">Selecciona</option>{budgetRows.map(x=><option key={itemId(x)} value={itemId(x)}>{readable(x.projectId)} · {readable(x.currency)}</option>)}</select></label><label>Descripción<input required value={expenseForm.description} onChange={e=>setExpenseForm({...expenseForm,description:e.target.value})}/></label><label>Importe<input required type="number" min="0.01" step="0.01" value={expenseForm.amount} onChange={e=>setExpenseForm({...expenseForm,amount:e.target.value})}/></label><button disabled={busy}><ReceiptText size={16}/>Registrar</button></form></section><DataTable title="Gastos recientes" rows={expenseRows} fields={['description','projectId','amount','currency','createdAt']}/></> : tab === 'rankings' ? <><section className="panel"><h2>Recalcular prioridad</h2><form className="create" onSubmit={recalculatePriority}><label>Proyecto<select required value={priorityForm.projectId} onChange={e=>setPriorityForm({...priorityForm,projectId:e.target.value})}><option value="">Selecciona</option>{projectRows.map(x=><option key={itemId(x)} value={itemId(x)}>{readable(x.name)}</option>)}</select></label>{(['impact','urgency','risk','alignment'] as const).map(k=><label key={k}>{k}<input type="number" min="0" max="100" value={priorityForm[k]} onChange={e=>setPriorityForm({...priorityForm,[k]:e.target.value})}/></label>)}<button disabled={busy}><ArrowUpDown size={16}/>Calcular</button></form></section><DataTable title="Ranking de proyectos" rows={rankingRows} fields={['rank','projectId','score','impact','urgency','risk','alignment']}/></> : null;
+
+  const specialView = tab === 'decisionlab' ? (
+    <Suspense fallback={<div className="route-loading" role="status">Cargando Decision Lab…</div>}><DecisionLab request={request}/></Suspense>
+  ) : tab === 'automations' ? (
+    <FlowPanel/>
+  ) : tab === 'notifications' ? (
+    <NotificationCenter/>
+  ) : tab === 'reports' ? (
+    <ReportsPanel/>
+  ) : tab === 'assistant' ? (
+    <section className="panel intelligence-panel" id="astra-intelligence"><div className="panelHeading"><div><h2><Sparkles size={18}/> ProFiles Insights</h2><span>Consultas de solo lectura sobre APIs autorizadas de tu organización.</span></div><span className="mode-chip">REGLAS DETERMINISTAS</span></div><form className="assistant-form" onSubmit={e=>{e.preventDefault();void askAssistant();}}><label className="sr-only" htmlFor="assistant-question">Pregunta para Inteligencia ProFiles</label><input id="assistant-question" maxLength={500} value={assistantQuestion} onChange={e=>setAssistantQuestion(e.target.value)} placeholder="¿Qué proyectos están atrasados?"/><button className="primary" disabled={assistantBusy||!assistantQuestion.trim()}>{assistantBusy?'Consultando…':<>Consultar <ArrowRight size={15}/></>}</button></form><div className="assistant-prompts">{['¿Qué proyectos están atrasados?','¿Qué presupuesto está cerca de agotarse?','Resume mis prioridades'].map(q=><button key={q} onClick={()=>{setAssistantQuestion(q);void askAssistant(q);}}>{q}</button>)}</div>{assistantBusy&&<p className="assistant-state" role="status">Consultando las APIs de dominio con tu sesión…</p>}{assistantAnswer?.error&&<p className="error assistant-state" role="alert">{assistantAnswer.error}</p>}{assistantAnswer&&!assistantAnswer.error&&<div className="assistant-answer"><strong>Hechos consultados</strong><ul>{assistantAnswer.facts.map((fact:string,i:number)=><li key={i}>{fact}</li>)}</ul><strong>Sugerencias (no ejecutan cambios)</strong><ul>{assistantAnswer.suggestions.map((item:string,i:number)=><li key={i}>{item}</li>)}</ul>{assistantAnswer.relatedProjects?.length>0&&<><strong>Proyectos relacionados</strong><ul>{assistantAnswer.relatedProjects.map((item:any)=><li key={item.id}><a href="/app/projects">{item.name || item.id}</a> · {item.status} · cierre {item.endDate}</li>)}</ul></>}{assistantAnswer.relatedTasks?.length>0&&<><strong>Tareas para revisar</strong><ul>{assistantAnswer.relatedTasks.map((item:any)=><li key={item.id}><a href="/app/projects">{item.title || item.id}</a> · vence {item.dueDate}</li>)}</ul></>}<small>Alcance: primera página de hasta 100 resultados por dominio. {assistantAnswer.unavailable.length?`Servicios no disponibles: ${assistantAnswer.unavailable.join(', ')}.`:''}</small></div>}</section>
+  ) : tab === 'tasks' ? (
+    <>
+      <section className="panel">
+        <div className="panelHeading">
+          <div>
+            <h2>Tablero Kanban</h2>
+            <span>Organiza tareas operativas por proyecto y estado de ejecución</span>
+          </div>
+          <label className="kanban-project-picker">
+            <span className="sr-only">Proyecto activo</span>
+            <select value={taskProject} onChange={e => setTaskProject(e.target.value)}>
+              <option value="">Selecciona proyecto</option>
+              {taskProjects.map(p => <option key={itemId(p)} value={itemId(p)}>{readable(p.name)}</option>)}
+            </select>
+          </label>
+        </div>
+        <form className="create" onSubmit={createTask}>
+          <label>Nueva tarea<input required maxLength={180} value={taskTitle} onChange={e => setTaskTitle(e.target.value)} placeholder="Ej. Preparar cronograma"/></label>
+          <label>Fecha de vencimiento<input type="date" value={taskDueDate} onChange={e => setTaskDueDate(e.target.value)}/></label>
+          <label>Responsable<select value={taskAssignee} onChange={e => setTaskAssignee(e.target.value)}><option value="">Sin asignar</option>{teamMembers.map(m => <option key={itemId(m)} value={itemId(m)}>{readable(m.name || m.email)}</option>)}</select></label>
+          <button disabled={busy || !taskProject}><Plus size={16}/>Crear</button>
+        </form>
+      </section>
+      <div className="kanban">
+        {([
+          ['TODO', 'Por hacer'],
+          ['IN_PROGRESS', 'En progreso'],
+          ['BLOCKED', 'Bloqueadas'],
+          ['DONE', 'Completadas'],
+        ] as const).map(([s, t]) => {
+          const colTasks = tasks.filter(x => x.status === s);
+          return (
+            <section className={`kanbanColumn kanban-col-${s.toLowerCase()}`} key={s}>
+              <h2>
+                <span className="kanban-col-title">
+                  <span className={`status-dot dot-${s.toLowerCase()}`} aria-hidden="true" />
+                  {t}
+                </span>
+                <span className="kanban-col-count">{colTasks.length}</span>
+              </h2>
+              {colTasks.map(x => {
+                const overdue = isDateOverdue(x.dueDate, x.status);
+                const assigneeMember = teamMembers.find(m => itemId(m) === x.assigneeId);
+                return (
+                  <article className={`taskCard ${overdue ? 'task-overdue' : ''}`} key={String(x.id)}>
+                    <div className="taskCard-top">
+                      <strong>{readable(x.title)}</strong>
+                      <StatusBadge value={x.status} />
+                    </div>
+                    {(Boolean(x.dueDate) || Boolean(x.assigneeId)) && (
+                      <div className="taskCard-meta">
+                        {Boolean(x.dueDate) && (
+                          <span className={`task-due ${overdue ? 'is-overdue' : ''}`}>
+                            <CalendarDays size={13} />
+                            {formatDate(x.dueDate)}
+                            {overdue && <b>Vencida</b>}
+                          </span>
+                        )}
+                        {Boolean(x.assigneeId) && (
+                          <UserAvatar name={assigneeMember?.name || assigneeMember?.email || x.assigneeId} size={22} />
+                        )}
+                      </div>
+                    )}
+                    <div className="taskCard-footer">
+                      <select aria-label={`Estado de ${readable(x.title)}`} value={String(x.status)} onChange={e => void moveTask(x, e.target.value)}>
+                        {['TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE'].map(v => <option key={v} value={v}>{v}</option>)}
+                      </select>
+                      {s === 'TODO' && <button type="button" className="task-quick-btn" onClick={() => void moveTask(x, 'IN_PROGRESS')}>Iniciar</button>}
+                      {s === 'IN_PROGRESS' && <button type="button" className="task-quick-btn complete" onClick={() => void moveTask(x, 'DONE')}>Completar</button>}
+                    </div>
+                  </article>
+                );
+              })}
+              {!colTasks.length && <div className="kanban-empty">Sin tareas en esta columna</div>}
+            </section>
+          );
+        })}
+      </div>
+    </>
+  ) : tab === 'assignments' ? (
+    <><section className="panel"><h2>Asignar recurso a proyecto</h2><form className="create" onSubmit={createAssignment}><label>Recurso<select required value={assignmentForm.resourceId} onChange={e=>setAssignmentForm({...assignmentForm,resourceId:e.target.value})}><option value="">Selecciona</option>{resourceRows.map(x=><option key={itemId(x)} value={itemId(x)}>{readable(x.name)}</option>)}</select></label><label>Proyecto<select required value={assignmentForm.projectId} onChange={e=>setAssignmentForm({...assignmentForm,projectId:e.target.value})}><option value="">Selecciona</option>{projectRows.map(x=><option key={itemId(x)} value={itemId(x)}>{readable(x.name)}</option>)}</select></label><label>Asignación (%)<input type="number" min="1" max="100" value={Number(assignmentForm.allocation)*100} onChange={e=>setAssignmentForm({...assignmentForm,allocation:String(Number(e.target.value)/100)})}/></label><button disabled={busy}><UserPlus size={16}/>Asignar</button></form></section><DataTable title="Asignaciones" rows={assignmentRows} fields={['resourceId','projectId','allocation','startDate','endDate']}/></>
+  ) : tab === 'expenses' ? (
+    <><section className="panel"><h2>Registrar gasto</h2><form className="create" onSubmit={createExpense}><label>Presupuesto<select required value={expenseForm.budgetId} onChange={e=>setExpenseForm({...expenseForm,budgetId:e.target.value})}><option value="">Selecciona</option>{budgetRows.map(x=><option key={itemId(x)} value={itemId(x)}>{readable(x.projectId)} · {readable(x.currency)}</option>)}</select></label><label>Descripción<input required value={expenseForm.description} onChange={e=>setExpenseForm({...expenseForm,description:e.target.value})}/></label><label>Importe<input required type="number" min="0.01" step="0.01" value={expenseForm.amount} onChange={e=>setExpenseForm({...expenseForm,amount:e.target.value})}/></label><button disabled={busy}><ReceiptText size={16}/>Registrar</button></form></section><DataTable title="Gastos recientes" rows={expenseRows} fields={['description','projectId','amount','currency','createdAt']}/></>
+  ) : tab === 'rankings' ? (
+    <><section className="panel"><h2>Recalcular prioridad</h2><form className="create" onSubmit={recalculatePriority}><label>Proyecto<select required value={priorityForm.projectId} onChange={e=>setPriorityForm({...priorityForm,projectId:e.target.value})}><option value="">Selecciona</option>{projectRows.map(x=><option key={itemId(x)} value={itemId(x)}>{readable(x.name)}</option>)}</select></label>{(['impact','urgency','risk','alignment'] as const).map(k=><label key={k}>{fieldLabel(k)}<input type="number" min="0" max="100" value={priorityForm[k]} onChange={e=>setPriorityForm({...priorityForm,[k]:e.target.value})}/></label>)}<button disabled={busy}><ArrowUpDown size={16}/>Calcular</button></form></section><DataTable title="Ranking de proyectos" rows={rankingRows} fields={['rank','projectId','score','impact','urgency','risk','alignment']}/></>
+  ) : null;
+
   const filtered = useMemo(() => items.filter(item => Object.values(item).some(v => String(v ?? '').toLowerCase().includes(search.toLowerCase()))), [items, search]);
-  const projects = overview.project || []; const portfolios = overview.portfolio || []; const budgets = overview.budget || []; const priorities = overview.priority || [];
-  const allocated = budgets.reduce((sum, b) => sum + (Number(b.allocated) || 0), 0); const spent = budgets.reduce((sum, b) => sum + (Number(b.spent) || 0), 0);
+  const projects = overview.project || []; const portfolios = overview.portfolio || []; const budgets = overview.budget || [];
+  const activeProjectsCount = projects.filter(p => ['active', 'in_progress', 'in-progress'].includes(String(p.status || '').toLowerCase())).length;
+  const completedProjectsCount = projects.filter(p => ['completed', 'complete', 'done'].includes(String(p.status || '').toLowerCase())).length;
+  const overdueProjectsCount = projects.filter(p => p.endDate && String(p.endDate).slice(0, 10) < new Date().toLocaleDateString('sv-SE') && !['completed', 'complete', 'done'].includes(String(p.status).toLowerCase())).length;
+  const overBudgetCount = budgets.filter(b => Number.isFinite(Number(b.allocated)) && Number.isFinite(Number(b.spent)) && Number(b.spent) > Number(b.allocated)).length;
+  const attentionTotal = overdueProjectsCount + overBudgetCount;
+  const projectHealthPct = projects.length ? Math.round(((activeProjectsCount + completedProjectsCount) / projects.length) * 100) : 0;
+
   return <div className="layout workspace-layout"><TopNav tab={tab} user={user} onNavigate={selectTab} onSignOut={async () => { if (localAuth) { localStorage.removeItem('cloudportfolio.accessToken'); localStorage.removeItem('cloudportfolio.user'); } else await signOutFromCognito(); setUser(''); navigate('/'); }}/>
     <main key={tab} className="workspace-view"><PageHeader eyebrow={`ProFiles / ${(dashboard ? 'VISIÓN GENERAL' : activeTitle).toUpperCase()}`} title={dashboard ? 'Resumen ejecutivo' : activeTitle} description={dashboard ? 'Proyectos, pendientes y decisiones en un mismo lugar.' : pageDescriptions[tab] || `Consulta y administra ${activeTitle.toLowerCase()} de tu organización.`} action={<button className="secondary" disabled={busy} onClick={() => setRefreshToken(n => n + 1)}><RefreshCw size={16} className={busy ? 'spin' : ''} />Actualizar</button>}/>
       {error && <div className="error banner toast" role="alert">{error}<button aria-label="Cerrar error" onClick={() => setError('')}><X size={16} /></button></div>}{notice && <div className="notice banner toast" role="status">{notice}<button aria-label="Cerrar aviso" onClick={() => setNotice('')}><X size={16} /></button></div>}
       {dashboard ? <><section className="dashboard-overview" aria-label="Estado del espacio de trabajo"><div className="dashboard-welcome"><div><span className="welcome-eyebrow">TU ESPACIO DE TRABAJO</span><h2>Todo lo importante, en un lugar.</h2><p>Revisa tus proyectos y encuentra el siguiente paso para tu equipo.</p></div><div className="welcome-emblem" aria-hidden="true"><FolderKanban size={38}/><span><Sparkles size={17}/></span></div></div>
         {overviewErrors.length > 0 && <div className="overview-warning" role="status">No se pudieron consultar: {overviewErrors.join(', ')}. Los datos disponibles se muestran por separado.</div>}
         <div className="dashboard-kpis" aria-busy={busy}>
-          <article><div className="metric-icon sky"><FolderKanban size={23}/></div><span>Proyectos registrados</span><strong>{busy ? '...' : overview.project ? projects.length : '—'}</strong><small>{overview.project ? `de ${projects.length} registrados` : 'Datos no disponibles'}</small></article>
-          <article><div className="metric-icon lavender"><Layers size={23}/></div><span>Portafolios</span><strong>{busy ? '...' : overview.portfolio ? portfolios.length : '—'}</strong><small>Alcance visible para tu organización</small></article>
-          <article><div className="metric-icon coral"><CalendarDays size={23}/></div><span>Necesita revisión</span><strong>{busy ? '...' : overview.project && overview.budget ? projects.filter(p => p.endDate && String(p.endDate).slice(0, 10) < new Date().toLocaleDateString('sv-SE') && !['completed', 'complete', 'done'].includes(String(p.status).toLowerCase())).length + budgets.filter(b => Number.isFinite(Number(b.allocated)) && Number.isFinite(Number(b.spent)) && Number(b.spent) > Number(b.allocated)).length : '—'}</strong><small>Fechas vencidas o gasto sobre lo asignado</small></article>
+          <article>
+            <div className="metric-icon sky"><FolderKanban size={23}/></div>
+            <span>Proyectos registrados</span>
+            <strong>{busy ? '...' : overview.project ? projects.length : '—'}</strong>
+            <small>{overview.project ? `de ${projects.length} registrados · ${activeProjectsCount} activos` : 'Datos no disponibles'}</small>
+            {overview.project && projects.length > 0 && (
+              <div className="kpi-progress-bar" aria-hidden="true">
+                <span className="kpi-progress-fill sky" style={{ width: `${Math.max(12, projectHealthPct)}%` }} />
+              </div>
+            )}
+          </article>
+          <article>
+            <div className="metric-icon lavender"><Layers size={23}/></div>
+            <span>Portafolios</span>
+            <strong>{busy ? '...' : overview.portfolio ? portfolios.length : '—'}</strong>
+            <small>Alcance visible para tu organización</small>
+            {overview.portfolio && portfolios.length > 0 && (
+              <div className="kpi-progress-bar" aria-hidden="true">
+                <span className="kpi-progress-fill lavender" style={{ width: `${Math.min(100, portfolios.length * 20)}%` }} />
+              </div>
+            )}
+          </article>
+          <article>
+            <div className="metric-icon coral"><CalendarDays size={23}/></div>
+            <span>Necesita revisión</span>
+            <strong>{busy ? '...' : overview.project && overview.budget ? attentionTotal : '—'}</strong>
+            <small>Fechas vencidas o gasto sobre lo asignado</small>
+            {overview.project && overview.budget && (
+              <div className="kpi-progress-bar" aria-hidden="true">
+                <span className={`kpi-progress-fill ${attentionTotal > 0 ? 'coral' : 'emerald'}`} style={{ width: attentionTotal > 0 ? `${Math.min(100, attentionTotal * 25)}%` : '100%' }} />
+              </div>
+            )}
+          </article>
         </div>
         <section className="panel attention-panel"><div className="panelHeading"><div><h2>Qué necesita atención</h2><span>Elementos derivados de fechas y montos registrados</span></div><button className="textButton" onClick={() => selectTab('project')}>Revisar proyectos <ArrowRight size={14}/></button></div>
-          <div className="attention-list">{projects.filter(p => p.endDate && String(p.endDate).slice(0, 10) < new Date().toLocaleDateString('sv-SE') && !['completed', 'complete', 'done'].includes(String(p.status).toLowerCase())).slice(0, 4).map((p, i) => <div className="attention-row" key={itemId(p) || i}><span className="attention-marker overdue"/><div><strong>{readable(p.name)}</strong><small>Fecha de cierre registrada: {readable(p.endDate)}</small></div><span className="attention-tag">Vencido</span></div>)}{budgets.filter(b => Number.isFinite(Number(b.allocated)) && Number.isFinite(Number(b.spent)) && Number(b.spent) > Number(b.allocated)).slice(0, 3).map((b, i) => <div className="attention-row" key={itemId(b) || i}><span className="attention-marker budget"/><div><strong>Presupuesto &middot; {readable(b.projectId)}</strong><small>Gasto {readable(b.spent)} supera monto asignado {readable(b.allocated)} &middot; {readable(b.currency)}</small></div><span className="attention-tag">Revisar</span></div>)}{overview.project && overview.budget && !projects.some(p => p.endDate && String(p.endDate).slice(0, 10) < new Date().toLocaleDateString('sv-SE') && !['completed', 'complete', 'done'].includes(String(p.status).toLowerCase())) && !budgets.some(b => Number.isFinite(Number(b.allocated)) && Number.isFinite(Number(b.spent)) && Number(b.spent) > Number(b.allocated)) && <div className="dashboard-empty"><strong>{busy ? 'Consultando registros...' : projects.length || budgets.length ? 'No se detectaron excepciones con los datos disponibles.' : 'A\u00fan no hay datos para revisar.'}</strong><span>{projects.length || budgets.length ? 'La lista refleja solo fechas y montos registrados.' : 'Crea un proyecto para comenzar a organizar el trabajo.'}</span></div>}</div>
+          <div className="attention-list">{projects.filter(p => p.endDate && String(p.endDate).slice(0, 10) < new Date().toLocaleDateString('sv-SE') && !['completed', 'complete', 'done'].includes(String(p.status).toLowerCase())).slice(0, 4).map((p, i) => <div className="attention-row" key={itemId(p) || i}><span className="attention-marker overdue"/><div><strong>{readable(p.name)}</strong><small>Fecha de cierre registrada: {formatDate(p.endDate)}</small></div><span className="attention-tag tag-overdue">Vencido</span></div>)}{budgets.filter(b => Number.isFinite(Number(b.allocated)) && Number.isFinite(Number(b.spent)) && Number(b.spent) > Number(b.allocated)).slice(0, 3).map((b, i) => <div className="attention-row" key={itemId(b) || i}><span className="attention-marker budget"/><div><strong>Presupuesto &middot; {readable(b.projectId)}</strong><small>Gasto {formatCurrency(b.spent, b.currency)} supera monto asignado {formatCurrency(b.allocated, b.currency)} &middot; {readable(b.currency)}</small></div><span className="attention-tag tag-budget">Revisar</span></div>)}{overview.project && overview.budget && !projects.some(p => p.endDate && String(p.endDate).slice(0, 10) < new Date().toLocaleDateString('sv-SE') && !['completed', 'complete', 'done'].includes(String(p.status).toLowerCase())) && !budgets.some(b => Number.isFinite(Number(b.allocated)) && Number.isFinite(Number(b.spent)) && Number(b.spent) > Number(b.allocated)) && <div className="dashboard-empty"><strong>{busy ? 'Consultando registros...' : projects.length || budgets.length ? 'No se detectaron excepciones con los datos disponibles.' : 'A\u00fan no hay datos para revisar.'}</strong><span>{projects.length || budgets.length ? 'La lista refleja solo fechas y montos registrados.' : 'Crea un proyecto para comenzar a organizar el trabajo.'}</span></div>}</div>
           <div className="dashboard-actions"><button className="secondary" onClick={() => selectTab('project')}>Abrir proyectos</button><button className="secondary" onClick={() => selectTab('decisionlab')}>Comparar escenarios</button><button className="secondary" onClick={() => selectTab('automations')}>Ver automatizaciones</button></div>
         </section>
-        <section className="dashboard-secondary-grid"><div className="panel"><div className="panelHeading"><div><h2><FolderKanban size={19}/> Proyectos destacados</h2><span>Proyectos disponibles en la primera página</span></div><button className="textButton" onClick={() => selectTab('project')}>Ver todos <ArrowRight size={14}/></button></div>{!overview.project && !busy ? <div className="dashboard-empty">No se pudieron cargar los proyectos. Actualiza para reintentar.</div> : projects.length ? <div className="projectList">{projects.slice(0, 5).map((p, i) => <div className="projectRow" key={itemId(p) || i}><span className="projectIcon"><BriefcaseBusiness size={17}/></span><div className="projectName"><strong>{readable(p.name)}</strong><small>{readable(p.portfolioId)} &middot; responsable {readable(p.ownerId)}</small></div><span className={`status status-${String(p.status || 'planning').toLowerCase()}`}>{readable(p.status || 'Planificación')}</span></div>)}</div> : <div className="dashboard-empty"><strong>{busy ? 'Cargando proyectos…' : 'Todavía no hay proyectos.'}</strong><span>Cuando existan registros, aparecerán aquí.</span></div>}</div>
+        <section className="dashboard-secondary-grid"><div className="panel"><div className="panelHeading"><div><h2><FolderKanban size={19}/> Proyectos destacados</h2><span>Proyectos disponibles en la primera página</span></div><button className="textButton" onClick={() => selectTab('project')}>Ver todos <ArrowRight size={14}/></button></div>{!overview.project && !busy ? <div className="dashboard-empty">No se pudieron cargar los proyectos. Actualiza para reintentar.</div> : projects.length ? <div className="projectList">{projects.slice(0, 5).map((p, i) => <div className="projectRow" key={itemId(p) || i}><span className="projectIcon"><BriefcaseBusiness size={17}/></span><div className="projectName"><strong>{readable(p.name)}</strong><small>{readable(p.portfolioId)} &middot; responsable {readable(p.ownerId)}</small></div><StatusBadge value={p.status || 'Planificación'} /></div>)}</div> : <div className="dashboard-empty"><strong>{busy ? 'Cargando proyectos…' : 'Todavía no hay proyectos.'}</strong><span>Cuando existan registros, aparecerán aquí.</span></div>}</div>
           <aside className="panel quick-actions"><h2><Sparkles size={19}/> Accesos directos</h2><button onClick={() => selectTab('project')}><FolderKanban size={16}/>Gestionar proyectos <ArrowRight size={14}/></button><button onClick={() => selectTab('decisionlab')}><Target size={16}/>Evaluar una decisión <ArrowRight size={14}/></button><button onClick={() => selectTab('automations')}><Workflow size={16}/>Programar seguimiento <ArrowRight size={14}/></button><button onClick={() => selectTab('reports')}><FileBarChart size={16}/>Consultar reportes <ArrowRight size={14}/></button></aside>
-        </section><section className="panel timeline-panel"><div className="panelHeading"><div><h2>Proximos vencimientos</h2><span>Fechas de cierre registradas en proyectos visibles</span></div><CalendarDays size={18}/></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando vencimientos"/> : !overview.project ? <p className="insight-empty">No se pudieron consultar los proyectos.</p> : projects.filter(p => typeof p.endDate === 'string' && p.endDate.slice(0,10) >= new Date().toLocaleDateString('sv-SE')).sort((a,b) => String(a.endDate).localeCompare(String(b.endDate))).slice(0,4).map((p,i) => <div className="insight-row" key={itemId(p)||i}><span>{readable(p.name)}</span><strong>{readable(p.endDate)}</strong></div>)}{!busy && overview.project && !projects.some(p => typeof p.endDate === 'string' && p.endDate.slice(0,10) >= new Date().toLocaleDateString('sv-SE')) && <p className="insight-empty">No hay fechas proximas registradas.</p>}</section><section className="panel timeline-panel"><div className="panelHeading"><div><h2>Actividad registrada</h2><span>Ultimas actualizaciones disponibles de proyectos</span></div><Activity size={18}/></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando actividad"/> : !overview.project ? <p className="insight-empty">No se pudo consultar la actividad.</p> : projects.filter(p => typeof p.updatedAt === 'string').sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0,4).map((p,i) => <div className="insight-row" key={itemId(p)||i}><span>{readable(p.name)}</span><strong>{readable(p.updatedAt)}</strong></div>)}{!busy && overview.project && !projects.some(p => typeof p.updatedAt === 'string') && <p className="insight-empty">No hay actualizaciones registradas en los proyectos visibles.</p>}</section><div className="insight-grid">
-          <section className="panel insight-card"><div className="panelHeading"><div><h2><Wallet size={19}/> Presupuestos</h2><span>Montos registrados por proyecto</span></div><button className="textButton" onClick={() => selectTab('budget')}>Abrir <ArrowRight size={14}/></button></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando presupuestos"/> : !overview.budget ? <p className="insight-empty">No se pudo consultar esta información.</p> : budgets.length ? budgets.slice(0,3).map((b,i) => <div className="insight-row" key={itemId(b)||i}><span>{readable(b.projectId)}</span><strong>{readable(b.spent)} / {readable(b.allocated)} {readable(b.currency)}</strong></div>) : <p className="insight-empty">Agrega un presupuesto para empezar el seguimiento.</p>}</section>
-          <section className="panel insight-card"><div className="panelHeading"><div><h2><Users size={19}/> Equipo y recursos</h2><span>Recursos disponibles en esta página</span></div><button className="textButton" onClick={() => selectTab('resource')}>Abrir <ArrowRight size={14}/></button></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando recursos"/> : !overview.resource ? <p className="insight-empty">No se pudo consultar esta información.</p> : overview.resource.length ? overview.resource.slice(0,3).map((r,i) => <div className="insight-row" key={itemId(r)||i}><span>{readable(r.name)}</span><strong>{readable(r.status)}</strong></div>) : <p className="insight-empty">Aún no hay recursos registrados.</p>}</section>
+        </section><section className="panel timeline-panel"><div className="panelHeading"><div><h2>Proximos vencimientos</h2><span>Fechas de cierre registradas en proyectos visibles</span></div><CalendarDays size={18}/></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando vencimientos"/> : !overview.project ? <p className="insight-empty">No se pudieron consultar los proyectos.</p> : projects.filter(p => typeof p.endDate === 'string' && p.endDate.slice(0,10) >= new Date().toLocaleDateString('sv-SE')).sort((a,b) => String(a.endDate).localeCompare(String(b.endDate))).slice(0,4).map((p,i) => <div className="insight-row" key={itemId(p)||i}><span>{readable(p.name)}</span><strong>{formatDate(p.endDate)}</strong></div>)}{!busy && overview.project && !projects.some(p => typeof p.endDate === 'string' && p.endDate.slice(0,10) >= new Date().toLocaleDateString('sv-SE')) && <p className="insight-empty">No hay fechas proximas registradas.</p>}</section><section className="panel timeline-panel"><div className="panelHeading"><div><h2>Actividad registrada</h2><span>Ultimas actualizaciones disponibles de proyectos</span></div><Activity size={18}/></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando actividad"/> : !overview.project ? <p className="insight-empty">No se pudo consultar la actividad.</p> : projects.filter(p => typeof p.updatedAt === 'string').sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0,4).map((p,i) => <div className="insight-row" key={itemId(p)||i}><span>{readable(p.name)}</span><strong>{formatDate(p.updatedAt)}</strong></div>)}{!busy && overview.project && !projects.some(p => typeof p.updatedAt === 'string') && <p className="insight-empty">No hay actualizaciones registradas en los proyectos visibles.</p>}</section><div className="insight-grid">
+          <section className="panel insight-card"><div className="panelHeading"><div><h2><Wallet size={19}/> Presupuestos</h2><span>Montos registrados por proyecto</span></div><button className="textButton" onClick={() => selectTab('budget')}>Abrir <ArrowRight size={14}/></button></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando presupuestos"/> : !overview.budget ? <p className="insight-empty">No se pudo consultar esta información.</p> : budgets.length ? budgets.slice(0,3).map((b,i) => { const alloc = Number(b.allocated) || 0; const sp = Number(b.spent) || 0; const pct = alloc > 0 ? Math.min(100, Math.round((sp / alloc) * 100)) : 0; const over = alloc > 0 && sp > alloc; return <div className="insight-budget-item" key={itemId(b)||i}><div className="insight-row"><span>{readable(b.projectId)}</span><strong>{formatCurrency(b.spent, b.currency)} / {formatCurrency(b.allocated, b.currency)}</strong></div><div className="inline-meter-track"><span className={`inline-meter-fill ${over ? 'fill-rose' : pct >= 80 ? 'fill-amber' : 'fill-emerald'}`} style={{ width: `${pct}%` }} /></div></div>; }) : <p className="insight-empty">Agrega un presupuesto para empezar el seguimiento.</p>}</section>
+          <section className="panel insight-card"><div className="panelHeading"><div><h2><Users size={19}/> Equipo y recursos</h2><span>Recursos disponibles en esta página</span></div><button className="textButton" onClick={() => selectTab('resource')}>Abrir <ArrowRight size={14}/></button></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando recursos"/> : !overview.resource ? <p className="insight-empty">No se pudo consultar esta información.</p> : overview.resource.length ? overview.resource.slice(0,3).map((r,i) => <div className="insight-row" key={itemId(r)||i}><UserAvatar name={r.name} size={24} /><StatusBadge value={r.status} /></div>) : <p className="insight-empty">Aún no hay recursos registrados.</p>}</section>
           <section className="panel insight-card"><div className="panelHeading"><div><h2>ProFiles Insights</h2><span>Señales basadas en tus registros</span></div><Sparkles size={18}/></div><p className="insight-empty">Revisa fechas vencidas y presupuestos que superan lo asignado. Son reglas sobre datos visibles, no predicciones.</p><button className="textButton" onClick={() => selectTab('assistant')}>Explorar información <ArrowRight size={14}/></button></section>
         </div><div className="dataNote"><Activity size={16}/> El resumen utiliza las primeras páginas devueltas por las APIs. Los importes se muestran por registro y no se suman entre monedas.</div>
       </section></> : active ? <>
         <div className="module-intro"><div><span className="module-kicker">TU ESPACIO DE TRABAJO</span><h2>{active.title}</h2><p>Consulta y organiza los registros disponibles para tu equipo.</p></div><button className="primary" onClick={startCreate}><Plus size={16}/> Nuevo registro</button></div>
-        <section className="panel editor-panel" hidden={!formOpen}><div className="panelHeading"><div><h2>{editing ? 'Editar registro' : 'Crear registro'}</h2><span>Los campos se validan según el contrato del servicio.</span></div><button type="button" className="iconButton" onClick={() => { setFormOpen(false); setEditing(null); }} title="Cancelar edición"><X size={17} /></button></div><form className="create" onSubmit={save}>{active.fields.map(field => <label key={field}>{fieldLabel(field)}{active.required.includes(field) ? ' *' : ''}{referenceOptions[field]?.length ? <select required={active.required.includes(field)} value={form[field] || ''} onChange={e => setForm({ ...form, [field]: e.target.value })}><option value="">Selecciona</option>{referenceOptions[field].map(item => <option key={itemId(item)} value={itemId(item)}>{readable(item.name || item.email || itemId(item))}</option>)}{form[field] && !referenceOptions[field].some(item => itemId(item) === form[field]) && <option value={form[field]}>Valor actual</option>}</select> : <input required={active.required.includes(field)} type={['allocated', 'spent', 'capacity', 'impact', 'urgency', 'risk', 'alignment'].includes(field) ? 'number' : field.endsWith('Date') ? 'date' : 'text'} step={['allocated', 'spent', 'capacity', 'impact', 'urgency', 'risk', 'alignment'].includes(field) ? 'any' : undefined} value={form[field] || ''} onChange={e => setForm({ ...form, [field]: e.target.value })} placeholder={fieldLabel(field)} />}</label>)}<button disabled={busy}><Plus size={17} />{busy ? 'Guardando…' : editing ? 'Guardar cambios' : 'Crear registro'}</button></form></section>
-        <section className="panel"><div className="panelHeading listHeading"><div><h2>Registros</h2><span>{filtered.length} visibles · resultados páginados por tenant</span></div><label className="searchBox"><Search size={16} /><input aria-label="Buscar registros" placeholder="Buscar…" value={search} onChange={e => setSearch(e.target.value)} /></label></div><div className="tableWrap"><table><thead><tr><th>Registro</th>{active.fields.slice(0, 4).map(f => <th key={f}>{fieldLabel(f)}</th>)}<th>Acciones</th></tr></thead><tbody>{filtered.map((item, i) => <tr key={itemId(item) || i}><td className="idCell">{itemId(item).slice(0, 13) || '—'}</td>{active.fields.slice(0, 4).map(f => <td key={f}>{readable(item[f])}</td>)}<td><div className="rowActions"><button onClick={() => startEdit(item)}>Editar</button><button className="deleteAction" onClick={() => void remove(item)}>Eliminar</button></div></td></tr>)}</tbody></table>{!filtered.length && <div className="empty">{busy ? 'Cargando registros…' : search ? 'No hay resultados para esta búsqueda.' : 'No hay registros todavía. Crea uno para comenzar.'}</div>}</div>{cursor && <button className="secondary moreButton" disabled={busy} onClick={() => void load(cursor)}>Cargar más</button>}</section>
+        <Modal
+          open={formOpen}
+          title={editing ? `Editar ${active.title.toLowerCase()}` : `Crear registro en ${active.title}`}
+          subtitle="Los campos se validan según el contrato del servicio."
+          onClose={() => { setFormOpen(false); setEditing(null); }}
+        >
+          <form className="create modal-form" onSubmit={save}>
+            <div className="modal-fields-grid">
+              {active.fields.map(field => (
+                <label key={field}>
+                  {fieldLabel(field)}{active.required.includes(field) ? ' *' : ''}
+                  {referenceOptions[field]?.length ? (
+                    <select required={active.required.includes(field)} value={form[field] || ''} onChange={e => setForm({ ...form, [field]: e.target.value })}>
+                      <option value="">Selecciona</option>
+                      {referenceOptions[field].map(item => <option key={itemId(item)} value={itemId(item)}>{readable(item.name || item.email || itemId(item))}</option>)}
+                      {form[field] && !referenceOptions[field].some(item => itemId(item) === form[field]) && <option value={form[field]}>Valor actual</option>}
+                    </select>
+                  ) : field === 'status' ? (
+                    <select required={active.required.includes(field)} value={form[field] || ''} onChange={e => setForm({ ...form, [field]: e.target.value })}>
+                      <option value="">Selecciona estado</option>
+                      <option value="ACTIVE">ACTIVE (Activo)</option>
+                      <option value="PLANNED">PLANNED (Planificado)</option>
+                      <option value="IN_PROGRESS">IN_PROGRESS (En progreso)</option>
+                      <option value="ON_HOLD">ON_HOLD (En pausa)</option>
+                      <option value="COMPLETED">COMPLETED (Completado)</option>
+                      <option value="BLOCKED">BLOCKED (Bloqueado)</option>
+                    </select>
+                  ) : (
+                    <input
+                      required={active.required.includes(field)}
+                      type={['allocated', 'spent', 'capacity', 'impact', 'urgency', 'risk', 'alignment'].includes(field) ? 'number' : field.endsWith('Date') ? 'date' : 'text'}
+                      step={['allocated', 'spent', 'capacity', 'impact', 'urgency', 'risk', 'alignment'].includes(field) ? 'any' : undefined}
+                      value={form[field] || ''}
+                      onChange={e => setForm({ ...form, [field]: e.target.value })}
+                      placeholder={fieldLabel(field)}
+                    />
+                  )}
+                </label>
+              ))}
+            </div>
+            <div className="modal-form-actions">
+              <button type="button" className="secondary" onClick={() => { setFormOpen(false); setEditing(null); }}>Cancelar</button>
+              <button type="submit" className="primary" disabled={busy}><Plus size={17} />{busy ? 'Guardando…' : editing ? 'Guardar cambios' : 'Crear registro'}</button>
+            </div>
+          </form>
+        </Modal>
+        <section className="panel"><div className="panelHeading listHeading"><div><h2>Registros</h2><span>{filtered.length} visibles · resultados páginados por tenant</span></div><label className="searchBox"><Search size={16} /><input aria-label="Buscar registros" placeholder="Buscar…" value={search} onChange={e => setSearch(e.target.value)} /></label></div><div className="tableWrap"><table><thead><tr><th>Registro</th>{active.fields.slice(0, 4).map(f => <th key={f}>{fieldLabel(f)}</th>)}<th>Acciones</th></tr></thead><tbody>{filtered.map((item, i) => <tr key={itemId(item) || i}><td className="idCell"><CopyIdBadge id={itemId(item)} /></td>{active.fields.slice(0, 4).map(f => <td key={f}>{renderFormattedCell(f, item)}</td>)}<td><div className="rowActions"><button onClick={() => startEdit(item)}>Editar</button><button className="deleteAction" onClick={() => void remove(item)}>Eliminar</button></div></td></tr>)}</tbody></table>{!filtered.length && <div className="empty">{busy ? 'Cargando registros…' : search ? 'No hay resultados para esta búsqueda.' : 'No hay registros todavía. Crea uno para comenzar.'}</div>}</div>{cursor && <button className="secondary moreButton" disabled={busy} onClick={() => void load(cursor)}>Cargar más</button>}</section>
       </> : specialView}
     </main></div>;
 }
