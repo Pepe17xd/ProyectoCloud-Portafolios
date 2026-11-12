@@ -9,39 +9,32 @@ provider:
   region: ${opt:region, 'us-east-1'}
   stage: ${opt:stage, 'dev'}
 resources:
+  Conditions:
+    HasOpsEmail: !Not [!Equals ['${env:OPS_ALERT_EMAIL, ''}', '']]
   Resources:
+    # ---- Event backbone: producers publish to ONE domain topic; every consumer owns a filtered queue.
     DomainTopic:
       Type: AWS::SNS::Topic
       Properties:
         TopicName: cloudportfolio-domain-${sls:stage}
+
+    # ---- Budget consumer: ProjectCreated -> SQS Budget (+DLQ) -> budget-service.consume
     DomainDLQ:
       Type: AWS::SQS::Queue
       Properties:
         QueueName: cloudportfolio-budget-dlq-${sls:stage}
+        MessageRetentionPeriod: 1209600
+        SqsManagedSseEnabled: true
     BudgetQueue:
       Type: AWS::SQS::Queue
       Properties:
         QueueName: cloudportfolio-budget-${sls:stage}
-        VisibilityTimeout: 120
-        RedrivePolicy:
-          deadLetterTargetArn: !GetAtt DomainDLQ.Arn
-          maxReceiveCount: 4
-    WhatsAppDLQ:
-      Type: AWS::SQS::Queue
-      Properties:
-        QueueName: cloudportfolio-whatsapp-dlq-${sls:stage}
-        MessageRetentionPeriod: 1209600
-        SqsManagedSseEnabled: true
-    WhatsAppQueue:
-      Type: AWS::SQS::Queue
-      Properties:
-        QueueName: cloudportfolio-whatsapp-${sls:stage}
         VisibilityTimeout: 180
         MessageRetentionPeriod: 1209600
         SqsManagedSseEnabled: true
         RedrivePolicy:
-          deadLetterTargetArn: !GetAtt WhatsAppDLQ.Arn
-          maxReceiveCount: 5
+          deadLetterTargetArn: !GetAtt DomainDLQ.Arn
+          maxReceiveCount: 4
     BudgetQueuePolicy:
       Type: AWS::SQS::QueuePolicy
       Properties:
@@ -63,9 +56,116 @@ resources:
         TopicArn: !Ref DomainTopic
         Endpoint: !GetAtt BudgetQueue.Arn
         FilterPolicy: {eventType: [ProjectCreated]}
+
+    # ---- Notifications: reminders/automations -> SQS Notifications (+DLQ) -> identity-service.notificationConsumer
+    NotificationDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: cloudportfolio-notifications-dlq-${sls:stage}
+        MessageRetentionPeriod: 1209600
+        SqsManagedSseEnabled: true
+    NotificationQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: cloudportfolio-notifications-${sls:stage}
+        VisibilityTimeout: 180
+        MessageRetentionPeriod: 1209600
+        SqsManagedSseEnabled: true
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt NotificationDLQ.Arn
+          maxReceiveCount: 5
+    NotificationQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues: [!Ref NotificationQueue]
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal: {Service: sns.amazonaws.com}
+              Action: sqs:SendMessage
+              Resource: !GetAtt NotificationQueue.Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !Ref DomainTopic
+    NotificationSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        Protocol: sqs
+        TopicArn: !Ref DomainTopic
+        Endpoint: !GetAtt NotificationQueue.Arn
+        FilterPolicy: {eventType: [ReminderDue, AutomationReport, RiskAlert, WeeklySummary]}
+
+    # ---- E-mail delivery (Amazon SES is unavailable in AWS Academy): the consumer publishes here and each
+    # user owns one e-mail subscription whose filter policy is {tenantId, userId}, created by the API.
+    EmailTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: cloudportfolio-email-${sls:stage}
+        DisplayName: ProFiles
+
+    # ---- Operations: alarms notify the team (Well-Architected OPS 1 / REL 2).
+    OpsAlertsTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: cloudportfolio-ops-alerts-${sls:stage}
+    OpsAlertsEmail:
+      Type: AWS::SNS::Subscription
+      Condition: HasOpsEmail
+      Properties:
+        Protocol: email
+        TopicArn: !Ref OpsAlertsTopic
+        Endpoint: '${env:OPS_ALERT_EMAIL, ''}'
+    BudgetDLQAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: cloudportfolio-budget-dlq-not-empty-${sls:stage}
+        AlarmDescription: Messages reached the Budget DLQ; inspect and redrive them.
+        Namespace: AWS/SQS
+        MetricName: ApproximateNumberOfMessagesVisible
+        Dimensions: [{Name: QueueName, Value: !GetAtt DomainDLQ.QueueName}]
+        Statistic: Maximum
+        Period: 60
+        EvaluationPeriods: 1
+        Threshold: 0
+        ComparisonOperator: GreaterThanThreshold
+        TreatMissingData: notBreaching
+        AlarmActions: [!Ref OpsAlertsTopic]
+    NotificationDLQAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: cloudportfolio-notifications-dlq-not-empty-${sls:stage}
+        AlarmDescription: Notifications exhausted their retries; inspect and redrive them.
+        Namespace: AWS/SQS
+        MetricName: ApproximateNumberOfMessagesVisible
+        Dimensions: [{Name: QueueName, Value: !GetAtt NotificationDLQ.QueueName}]
+        Statistic: Maximum
+        Period: 60
+        EvaluationPeriods: 1
+        Threshold: 0
+        ComparisonOperator: GreaterThanThreshold
+        TreatMissingData: notBreaching
+        AlarmActions: [!Ref OpsAlertsTopic]
+    NotificationQueueAgeAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: cloudportfolio-notifications-queue-age-${sls:stage}
+        AlarmDescription: The oldest notification has waited more than five minutes.
+        Namespace: AWS/SQS
+        MetricName: ApproximateAgeOfOldestMessage
+        Dimensions: [{Name: QueueName, Value: !GetAtt NotificationQueue.QueueName}]
+        Statistic: Maximum
+        Period: 60
+        EvaluationPeriods: 5
+        Threshold: 300
+        ComparisonOperator: GreaterThanThreshold
+        TreatMissingData: notBreaching
+        AlarmActions: [!Ref OpsAlertsTopic]
   Outputs:
     DomainTopicArn: {Value: !Ref DomainTopic}
     BudgetQueueArn: {Value: !GetAtt BudgetQueue.Arn}
-    WhatsAppQueueArn: {Value: !GetAtt WhatsAppQueue.Arn}
-    WhatsAppQueueUrl: {Value: !Ref WhatsAppQueue}
-    WhatsAppDLQArn: {Value: !GetAtt WhatsAppDLQ.Arn}
+    BudgetDLQArn: {Value: !GetAtt DomainDLQ.Arn}
+    NotificationQueueArn: {Value: !GetAtt NotificationQueue.Arn}
+    NotificationDLQArn: {Value: !GetAtt NotificationDLQ.Arn}
+    EmailTopicArn: {Value: !Ref EmailTopic}
+    OpsAlertsTopicArn: {Value: !Ref OpsAlertsTopic}

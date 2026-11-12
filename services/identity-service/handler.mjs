@@ -1,39 +1,24 @@
 ﻿import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, GetCommand, QueryCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
-import { CognitoIdentityProviderClient } from '@aws-sdk/client-cognito-identity-provider';
-import { createProvisioner } from './provisioning.mjs';
+import { CognitoIdentityProviderClient, AdminCreateUserCommand, AdminSetUserPasswordCommand, AdminUpdateUserAttributesCommand } from '@aws-sdk/client-cognito-identity-provider';
+import { createProvisioner, createOrganizationJoiner } from './provisioning.mjs';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
-import { SQSClient, GetQueueUrlCommand } from '@aws-sdk/client-sqs';
-import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-import { createWhatsAppRuntime, processWhatsAppJob, shouldRetryWhatsAppRecord } from './whatsapp-runtime.mjs';
-import { localMetaMockConfig } from './whatsapp-local-provider.mjs';
+import { createEmailRuntime, shouldRetryEmailRecord, parseQueueBody, FLOW_EVENT_MAP } from './email-notifications.mjs';
 import { claims, authorize, reply, parse, validate, key, uuid, sanitize, decodeCursor } from '@cloudportfolio/shared';
 import { orbitalApi, runDueReminders } from './orbital.mjs';
-import { buildRecipientFlowReport, createFlowEngine, createLocalNotificationProvider, createWhatsAppBusinessProvider } from './flow-engine.mjs';
+import { buildRecipientFlowReport, createFlowEngine, createLocalNotificationProvider } from './flow-engine.mjs';
 import { createHash } from 'node:crypto';
 import { nextFlowRun, dispatchDueFlows } from './flow-scheduler.mjs';
 const db = DynamoDBDocumentClient.from(new DynamoDBClient({ endpoint: process.env.DYNAMODB_ENDPOINT, region: process.env.AWS_REGION || 'us-east-1', ...(process.env.DYNAMODB_ENDPOINT ? {credentials:{accessKeyId:'local',secretAccessKey:'local'}} : {}) }));
-const sns = new SNSClient({});
-const sqs = new SQSClient({ endpoint: process.env.SQS_ENDPOINT, region: process.env.AWS_REGION || 'us-east-1', ...(process.env.SQS_ENDPOINT ? { credentials: { accessKeyId: 'local', secretAccessKey: 'local' } } : {}) });
-const secrets = new SecretsManagerClient({ region: process.env.AWS_REGION || 'us-east-1' });
+const sns = new SNSClient({ ...(process.env.SNS_ENDPOINT ? { endpoint: process.env.SNS_ENDPOINT, region: process.env.AWS_REGION || 'us-east-1', credentials: { accessKeyId: 'local', secretAccessKey: 'local' } } : {}) });
+const cognitoClient = new CognitoIdentityProviderClient({});
 const table = process.env.TABLE_NAME;
-async function getWhatsAppSecret() {
-  if (process.env.NOTIFICATION_MODE === 'integration-test') {
-    if (process.env.NODE_ENV === 'production' || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.WHATSAPP_PROVIDER_MODE !== 'meta-mock') return null;
-    return localMetaMockConfig(process.env.WHATSAPP_META_API_ORIGIN);
-  }
-  if (!process.env.WHATSAPP_META_SECRET_ARN) return null;
-  try {
-    const result = await secrets.send(new GetSecretValueCommand({ SecretId: process.env.WHATSAPP_META_SECRET_ARN }));
-    return JSON.parse(result.SecretString || '{}');
-  } catch {
-    throw Object.assign(new Error('WhatsApp provider configuration is unavailable.'), { code: 'SECRET_UNAVAILABLE' });
-  }
-}
+// NOTIFICATION_MODE: disabled | sns-email (AWS) | local (simulated, no e-mail leaves the machine).
 const notificationMode = process.env.NOTIFICATION_MODE || 'disabled';
-const whatsAppRuntime = createWhatsAppRuntime({ db, table, sqs, queueUrl: process.env.WHATSAPP_QUEUE_URL, mode: notificationMode, secretProvider: getWhatsAppSecret, webhookVerifyToken: process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || '', appSecret: notificationMode === 'integration-test' ? process.env.WHATSAPP_TEST_APP_SECRET || '' : '', testVerification: notificationMode === 'integration-test' && process.env.WHATSAPP_VERIFICATION_PROVIDER === 'local-test', allowTestDelivery: notificationMode === 'integration-test' && process.env.WHATSAPP_ALLOW_TEST_DELIVERY === 'true' });
-if (notificationMode === 'integration-test') console.log(JSON.stringify({ action: 'whatsapp.integration-mode', providerMode: process.env.WHATSAPP_PROVIDER_MODE || 'unset', verificationProvider: process.env.WHATSAPP_VERIFICATION_PROVIDER || 'unset', testDeliveryEnabled: process.env.WHATSAPP_ALLOW_TEST_DELIVERY === 'true' }));
-const provision = createProvisioner({ db, cognito: new CognitoIdentityProviderClient({}), table, poolId: process.env.COGNITO_USER_POOL_ID });
+const emailRuntime = createEmailRuntime({ db, table, sns, domainTopicArn: process.env.TOPIC_ARN || '', emailTopicArn: process.env.EMAIL_TOPIC_ARN || '', mode: notificationMode });
+const provision = createProvisioner({ db, cognito: cognitoClient, table, poolId: process.env.COGNITO_USER_POOL_ID });
+const joinOrganization = createOrganizationJoiner({ db, cognito: cognitoClient, table, poolId: process.env.COGNITO_USER_POOL_ID });
+const PASSWORD_POLICY = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{12,256}$/;
 const fields = ["name", "email", "role", "status"];
 const required = ["name"];
 const resource = 'users';
@@ -61,15 +46,14 @@ const flowEngine = createFlowEngine({
         if (profile.Item?.status !== 'ACTIVE') continue;
         const personalized = buildRecipientFlowReport({ role: membership.role, userId: membership.userId, source, alerts, workflowId, executionId: idempotencyKey });
         const stableId = createHash('sha256').update(`${tenantId}:${workflowId}:${idempotencyKey}:${membership.userId}`).digest('hex');
-        if (await whatsAppRuntime.enqueue({ tenantId, userId: membership.userId, eventType: personalized.eventType, idempotencyKey: `flow-${stableId}`, title: personalized.report.title, parameters: personalized.parameters })) queued += 1;
+        if (await emailRuntime.enqueue({ tenantId, userId: membership.userId, eventType: personalized.eventType, idempotencyKey: `flow-${stableId}`, title: personalized.report.title, parameters: personalized.parameters })) queued += 1;
       }
       lastKey = page.LastEvaluatedKey;
     } while (lastKey);
-    return { ...notification, whatsappQueuedCount: queued, whatsappStatus: queued ? 'REQUESTED' : 'NOT_REQUESTED' };
+    return { ...notification, emailQueuedCount: queued, emailStatus: queued ? 'REQUESTED' : 'NOT_REQUESTED' };
   },
 });
 const localNotifications = createLocalNotificationProvider();
-const whatsappProvider = createWhatsAppBusinessProvider();
 async function flowsApi(event, actor, method, path) {
   const { tenantId, userId, role } = actor; const prefix = `TENANT#${tenantId}`;
   if (role === 'SERVICE' && !(method === 'POST' && /^\/flows\/[^/]+\/run$/.test(path))) return reply(403,{error:'Service identity is restricted to scheduled flow execution'});
@@ -96,7 +80,7 @@ async function notificationsApi(event, actor, method, path) {
   const mode = process.env.NOTIFICATION_MODE || 'disabled';
   if (path === '/notifications/preferences' && method === 'GET') {
     const value = await db.send(new GetCommand({ TableName: table, Key: prefKey }));
-    return reply(200, value.Item || { enabled: false, timezone: 'America/Lima', allowedHours: { start: '08:00', end: '18:00' }, frequency: 'immediate', alertTypes: [], whatsappConsent: false, whatsappVerifiedLocally: false });
+    return reply(200, value.Item || { enabled: false, timezone: 'America/Lima', allowedHours: { start: '08:00', end: '18:00' }, frequency: 'immediate', alertTypes: [], emailConsent: false });
   }
   if (path === '/notifications/preferences' && method === 'PUT') {
     const body = parse(event);
@@ -108,7 +92,7 @@ async function notificationsApi(event, actor, method, path) {
     await db.send(new PutCommand({ TableName: table, Item: item }));
     return reply(200, item);
   }
-  if (path.startsWith('/notifications/whatsapp') || path === '/notifications/verification-inbox') return whatsAppRuntime.handle(event, actor, method, path);
+  if (path.startsWith('/notifications/email')) return emailRuntime.handle(event, actor, method, path);
   if (path === '/notifications/inbox' && method === 'GET') {
     const data = await db.send(new QueryCommand({ TableName: table, KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)', ExpressionAttributeValues: { ':pk': prefKey.pk, ':prefix': `NOTIFY#DELIVERY#${userId}#` }, Limit: 50 }));
     return reply(200, { items: data.Items || [] });
@@ -119,10 +103,13 @@ export async function api(event) {
   try {
     const method=event.requestContext?.http?.method;
     const path=event.rawPath || event.path || '/users';
-    if (path === '/webhooks/meta/whatsapp') return await whatsAppRuntime.webhook(event, method);
     if (path === '/auth/provision' && method === 'POST') {
       try { if (typeof event.body !== 'string' || Buffer.byteLength(event.body, 'utf8') > 1024) return reply(400, { error: 'Invalid registration request' }); return reply(200, await provision(event.requestContext?.authorizer?.jwt?.claims, parse(event))); }
       catch (error) { return reply(error.status || 503, { error: error.status ? error.message : 'Provisioning temporarily unavailable; retry.' }); }
+    }
+    if (path === '/auth/join' && method === 'POST') {
+      try { if (typeof event.body !== 'string' || Buffer.byteLength(event.body, 'utf8') > 1024) return reply(400, { error: 'Invalid join request' }); return reply(200, await joinOrganization(event.requestContext?.authorizer?.jwt?.claims, parse(event))); }
+      catch (error) { return reply(error.status || 503, { error: error.status ? error.message : 'Join temporarily unavailable; retry.' }); }
     }
     const {tenantId,userId,role} = claims(event);
     if (path.startsWith('/flows')) return await flowsApi(event,{tenantId,userId,role},method,path);
@@ -150,11 +137,61 @@ export async function api(event) {
       if(kind==='memberships' && !['ADMIN','MANAGER','VIEWER'].includes(body.role)) return reply(400,{error:'Invalid role'});
       if(kind==='users' && body.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) return reply(400,{error:'Invalid email'});
       if(kind==='memberships'){
-        const member=await db.send(new GetCommand({TableName:table,Key:itemKey(body.userId)}));
+        const member=await db.send(new GetCommand({TableName:table,Key:{pk:`TENANT#${tenantId}`,sk:`ITEM#${body.userId}`}}));
         if(!member.Item || !member.Item.email) return reply(422,{error:'User profile not found in this tenant'});
       }
-      const recordId=kind==='tenants'?tenantId:uuid();
-      const item={...itemKey(recordId),id:recordId,...sanitize(body,allowed),createdBy:userId,createdAt:new Date().toISOString()};
+      let recordId=kind==='tenants'?tenantId:uuid();
+      const now = new Date().toISOString();
+      if(kind==='users'){
+        const roleValue = body.role || 'MANAGER';
+        const statusValue = body.status || 'ACTIVE';
+        const normalizedEmail = body.email ? String(body.email).trim().toLowerCase() : undefined;
+        let loginEnabled = false;
+        if (body.password) {
+          if (!normalizedEmail) return reply(400, { error: 'Email is required to provision login credentials' });
+          if (!PASSWORD_POLICY.test(String(body.password))) return reply(400, { error: 'La contraseña debe tener al menos 12 caracteres e incluir mayúscula, minúscula, número y símbolo.' });
+          if (process.env.COGNITO_USER_POOL_ID) {
+            try {
+              const created = await cognitoClient.send(new AdminCreateUserCommand({
+                UserPoolId: process.env.COGNITO_USER_POOL_ID,
+                Username: normalizedEmail,
+                MessageAction: 'SUPPRESS',
+                UserAttributes: [
+                  { Name: 'email', Value: normalizedEmail },
+                  { Name: 'email_verified', Value: 'true' },
+                  { Name: 'name', Value: String(body.name || '').trim().slice(0, 100) },
+                  { Name: 'custom:tenantId', Value: tenantId },
+                  { Name: 'custom:role', Value: roleValue },
+                ],
+              }));
+              await cognitoClient.send(new AdminSetUserPasswordCommand({
+                UserPoolId: process.env.COGNITO_USER_POOL_ID,
+                Username: normalizedEmail,
+                Password: String(body.password),
+                Permanent: true,
+              }));
+              const subAttr = (created?.User?.Attributes || []).find(a => a.Name === 'sub')?.Value;
+              if (subAttr) recordId = subAttr;
+              loginEnabled = true;
+            } catch (err) {
+              if (err?.name === 'UsernameExistsException') return reply(409, { error: 'Ya existe una cuenta registrada en Cognito con ese correo electrónico.' });
+              if (err?.name === 'InvalidPasswordException') return reply(400, { error: `Contraseña rechazada por Cognito: ${err.message}` });
+              if (err?.name === 'InvalidParameterException') return reply(400, { error: `Parámetro de registro inválido: ${err.message}` });
+              if (err?.name === 'NotAuthorizedException') return reply(403, { error: `No autorizado en Cognito: ${err.message}` });
+              console.error('Cognito user creation error:', err);
+              return reply(err?.$metadata?.httpStatusCode || 500, { error: err.message || 'Error al aprovisionar usuario en Cognito' });
+            }
+          } else {
+            loginEnabled = true;
+          }
+        }
+        const cleaned = sanitize({ ...body, ...(normalizedEmail ? { email: normalizedEmail } : {}), role: roleValue, status: statusValue }, allowed);
+        const item = { ...itemKey(recordId), id: recordId, ...cleaned, loginEnabled, entityType: 'UserProfile', createdBy: userId, createdAt: now };
+        await db.send(new PutCommand({ TableName: table, Item: item, ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)' }));
+        await db.send(new PutCommand({ TableName: table, Item: { pk: `TENANT#${tenantId}`, sk: `MEMBERSHIP#${recordId}`, id: recordId, userId: recordId, role: roleValue, status: statusValue, entityType: 'Membership', createdBy: userId, createdAt: now } }));
+        return reply(201, item);
+      }
+      const item={...itemKey(recordId),id:recordId,...sanitize(body,allowed),createdBy:userId,createdAt:now};
       await db.send(new PutCommand({TableName:table,Item:item,ConditionExpression:'attribute_not_exists(pk) AND attribute_not_exists(sk)'}));
       return reply(201,item);
     }
@@ -165,8 +202,19 @@ export async function api(event) {
       if(body.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) return reply(400,{error:'Invalid email'});
       const old=await db.send(new GetCommand({TableName:table,Key:itemKey(id)}));
       if(!old.Item)return reply(404,{error:'Not found'});
-      const item={...old.Item,...body,updatedAt:new Date().toISOString()};
+      const updatedAt = new Date().toISOString();
+      const item={...old.Item,...body,updatedAt};
       await db.send(new PutCommand({TableName:table,Item:item,ConditionExpression:'attribute_exists(pk) AND attribute_exists(sk)'}));
+      if (kind === 'users' && (body.role || body.status)) {
+        const memKey = { pk: `TENANT#${tenantId}`, sk: `MEMBERSHIP#${id}` };
+        const oldMem = await db.send(new GetCommand({ TableName: table, Key: memKey }));
+        if (oldMem.Item) {
+          await db.send(new PutCommand({ TableName: table, Item: { ...oldMem.Item, ...(body.role ? { role: body.role } : {}), ...(body.status ? { status: body.status } : {}), updatedAt } }));
+        }
+        if (body.role && item.email && process.env.COGNITO_USER_POOL_ID) {
+          await cognitoClient.send(new AdminUpdateUserAttributesCommand({ UserPoolId: process.env.COGNITO_USER_POOL_ID, Username: String(item.email).toLowerCase(), UserAttributes: [{ Name: 'custom:role', Value: body.role }] })).catch(() => {});
+        }
+      }
       return reply(200,item);
     }
     if(method==='DELETE'){
@@ -174,26 +222,32 @@ export async function api(event) {
       const deleted=await db.send(new DeleteCommand({TableName:table,Key:itemKey(id),ReturnValues:'ALL_OLD'}));
       return deleted.Attributes?reply(200,{deleted:true}):reply(404,{error:'Not found'});
     }
-    return reply(405,{error:'Method not allowed'});
-  }catch(e){console.error(e);return reply(e.status||500,{error:e.status?e.message:'Internal server error'});}
+    return reply(405, { error: 'Method not allowed' });
+  } catch (e) {
+    console.error(e);
+    const status = e.status || e.$metadata?.httpStatusCode || 500;
+    const message = e.message || 'Internal server error';
+    return reply(status, { error: message });
+  }
 }
 
 export async function scheduled() {
-  const outcomes = await runDueReminders({ limit: 20, enqueueWhatsApp: whatsAppRuntime.enqueue });
+  const outcomes = await runDueReminders({ limit: 20, enqueueEmail: emailRuntime.enqueue });
   return { processed: outcomes.length, outcomes };
 }
 
-export async function whatsappConsumer(event) {
+// SQS Notifications -> Lambda. Partial batch response: only failed records return to the queue
+// (and move to the Notifications DLQ after maxReceiveCount receives).
+export async function notificationConsumer(event) {
   const batchItemFailures = [];
   for (const record of event.Records || []) {
-    let job;
     try {
-      job = JSON.parse(record.body || '{}');
-      const outcome = await processWhatsAppJob({ job, db, table, runtime: whatsAppRuntime });
-      if (outcome?.messageId) console.info(JSON.stringify({ action: 'whatsapp.accepted', tenantId: job.tenantId, userId: job.userId, idempotencyKey: job.idempotencyKey }));
+      const outcome = await emailRuntime.processJob(parseQueueBody(record.body));
+      console.info(JSON.stringify({ action: 'notification.processed', status: outcome?.status, messageId: record.messageId }));
     } catch (error) {
-      if (shouldRetryWhatsAppRecord(error)) batchItemFailures.push({ itemIdentifier: record.messageId });
-      console.error(JSON.stringify({ action: 'whatsapp.consume.failed', code: error.code || 'INTERNAL', retrying: shouldRetryWhatsAppRecord(error) }));
+      const retry = shouldRetryEmailRecord(error);
+      if (retry) batchItemFailures.push({ itemIdentifier: record.messageId });
+      console.error(JSON.stringify({ action: 'notification.consume.failed', code: error.code || 'INTERNAL', retrying: retry, messageId: record.messageId }));
     }
   }
   return { batchItemFailures };

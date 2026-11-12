@@ -31,6 +31,9 @@
 .auth-progress li.is-current { color:#315f8e; }
 .auth-progress li.is-current>span { border-color:#477ba3; background:#eaf3f8; color:#315f8e; }
 .auth-progress li.is-complete>span { border-color:#cde4d5; background:#eaf4ed; color:#4b8a65; }
+.auth-mode-tabs { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:0 0 18px; padding:4px; border:1px solid #e2e4e4; border-radius:12px; background:#f4f6f8; }
+.auth-mode-tab { min-height:38px; padding:7px 10px; border:0; border-radius:9px; background:transparent; color:#5a6b7e; font-family:inherit; font-size:12px; font-weight:650; cursor:pointer; transition:background .16s ease,color .16s ease,box-shadow .16s ease; }
+.auth-mode-tab.is-active { background:#fff; color:#1d3047; box-shadow:0 2px 6px #1a304314; }
 @media(max-width:600px) {
   .auth-main { padding-inline:18px; }
   .auth-card { width:100%; }

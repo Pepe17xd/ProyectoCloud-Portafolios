@@ -19,6 +19,14 @@ export const request: ApiRequest = async <T = any>(module: string, path: string,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const content = await response.json().catch(() => ({}));
-  if (!response.ok) throw Error(content.error || `Solicitud fallida (HTTP ${response.status})`);
+  if (!response.ok) {
+    const detailMsg = Array.isArray(content.detail)
+      ? content.detail.map((d: any) => d.msg || `${d.loc?.join('.')}: ${d.type}`).join(', ')
+      : typeof content.detail === 'string'
+      ? content.detail
+      : undefined;
+    const msg = content.error || content.message || detailMsg || (typeof content === 'string' ? content : '') || `Solicitud fallida (HTTP ${response.status})`;
+    throw Error(msg);
+  }
   return content as T;
 };

@@ -10,7 +10,8 @@ Este documento describe el diseño y el estado del repositorio. Identity, Portfo
 - Seis servicios: `identity-service`, `portfolio-service`, `project-service`, `resource-service`, `budget-service`, `priority-service`.
 - Cada servicio define una tabla DynamoDB propia con clave `pk`/`sk` y consulta por partición `TENANT#<tenant>`.
 - Cognito User Pool en `infrastructure/auth`; cada HTTP API declara JWT authorizer.
-- SNS, SQS, DLQ y suscripción filtrada `ProjectCreated` en `infrastructure/events`.
+- SNS (`DomainTopic`, `EmailTopic`, `OpsAlertsTopic`), colas SQS (`BudgetQueue`, `NotificationQueue`) con sus respectivas DLQ (`BudgetDLQ`, `NotificationDLQ`), cifrado SSE, suscripciones filtradas y alarmas de CloudWatch en `infrastructure/events`.
+- Tracing activo con AWS X-Ray en las funciones Lambda y *throttling* por ruta en API Gateway HTTP API.
 - Bucket S3 privado con bloqueo de acceso público y cifrado en `infrastructure/storage`; no se encontró API de documentos.
 - Docker Compose proporciona DynamoDB Local y LocalStack. La identidad local es un adaptador propio y no un proveedor OIDC.
 

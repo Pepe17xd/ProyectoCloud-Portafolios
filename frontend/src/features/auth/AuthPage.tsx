@@ -4,7 +4,7 @@ import { Brand, FoliMascot } from '../../components/Brand';
 import { localAuth } from '../../api/client';
 import {
   signInWithCognito, registerCognito, confirmCognito, confirmCognitoSignIn, resendCognito,
-  cognitoHasOrganization, provisionCognito, getCognitoIdToken, refreshProvisionedCognitoSession,
+  cognitoHasOrganization, provisionCognito, joinCognitoOrganization, getCognitoIdToken, refreshProvisionedCognitoSession,
 } from '../../auth/cognito';
 import { completeConfirmedRegistration, completeRegistrationChallenge, provisionAuthenticatedRegistration } from '../../auth/registration-flow.mjs';
 import { navigate } from '../../hooks/navigation';
@@ -13,11 +13,13 @@ import './auth-registration.css';
 const env = import.meta.env;
 const EMAIL_KEY = 'profiles.pendingEmail';
 const ORG_KEY = 'profiles.pendingOrganization';
+const MODE_KEY = 'profiles.pendingMode';
 const CONFIRMED_KEY = 'profiles.registrationConfirmedEmail';
 const PASSWORD_REQUIREMENTS = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{12,256}$/;
 const LOCAL_PASSWORD_REQUIREMENTS = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{12,128}$/;
 type Phase = 'form' | 'confirm' | 'signin' | 'challenge' | 'finish';
 type BusyStep = 'register' | 'confirm' | 'signin' | 'provision' | 'refresh' | 'resend' | '';
+type RegisterMode = 'create' | 'join';
 
 function readableAuthError(error: unknown, phase: Phase) {
   const err = error as Error & { name?: string; stage?: string };
@@ -42,6 +44,7 @@ function readableAuthError(error: unknown, phase: Phase) {
 
 export default function AuthPage({ register = false, redirect = '/app' }: { register?: boolean; redirect?: string }) {
   const [organizationName, setOrganizationName] = useState(() => localStorage.getItem(ORG_KEY) || '');
+  const [registerMode, setRegisterMode] = useState<RegisterMode>(() => (localStorage.getItem(MODE_KEY) === 'join' ? 'join' : 'create'));
   const [phase, setPhase] = useState<Phase>('form');
   const [busyStep, setBusyStep] = useState<BusyStep>('');
   const [code, setCode] = useState('');
@@ -56,6 +59,8 @@ export default function AuthPage({ register = false, redirect = '/app' }: { regi
   const [notice, setNotice] = useState('');
   const busy = busyStep !== '';
   const registrationStep = phase === 'form' ? 0 : phase === 'finish' ? 2 : 1;
+  const isJoin = register && registerMode === 'join';
+  const activeProvisioner = isJoin ? joinCognitoOrganization : provisionCognito;
 
   useEffect(() => {
     if (!register || localAuth) return;
@@ -71,21 +76,23 @@ export default function AuthPage({ register = false, redirect = '/app' }: { regi
     }).catch(() => {});
   }, [register]);
 
-  function savePendingRegistration(nextEmail: string, organization: string) {
+  function savePendingRegistration(nextEmail: string, organization: string, mode: RegisterMode) {
     localStorage.setItem(EMAIL_KEY, nextEmail);
     localStorage.setItem(ORG_KEY, organization);
+    localStorage.setItem(MODE_KEY, mode);
   }
 
   function clearPendingRegistration() {
     localStorage.removeItem(EMAIL_KEY);
     localStorage.removeItem(ORG_KEY);
+    localStorage.removeItem(MODE_KEY);
     localStorage.removeItem(CONFIRMED_KEY);
   }
 
   async function finishProvisioning() {
     setBusyStep('provision'); setError(''); setNotice('Preparando tu organización...');
     try {
-      await provisionAuthenticatedRegistration({ organizationName: organizationName.trim(), provision: provisionCognito, refresh: refreshProvisionedCognitoSession, hasOrganization: cognitoHasOrganization });
+      await provisionAuthenticatedRegistration({ organizationName: organizationName.trim(), provision: activeProvisioner, refresh: refreshProvisionedCognitoSession, hasOrganization: cognitoHasOrganization });
       clearPendingRegistration(); setPassword(''); setConfirmPassword(''); setNotice('Entrando a ProFiles...'); navigate('/app');
     } catch (cause) { setPhase('finish'); setError(readableAuthError(cause, 'finish')); setNotice(''); }
     finally { setBusyStep(''); }
@@ -99,11 +106,11 @@ export default function AuthPage({ register = false, redirect = '/app' }: { regi
       if (phase === 'form') {
         if (!PASSWORD_REQUIREMENTS.test(password)) { setError('La contraseña debe tener entre 12 y 256 caracteres e incluir mayúscula, minúscula, número y símbolo.'); return; }
         if (password !== confirmPassword) { setError('Las contraseñas no coinciden.'); return; }
-        if (name.trim().length < 2 || organizationName.trim().length < 2) { setError('Completa tu nombre y el nombre de la organización.'); return; }
+        if (name.trim().length < 2 || organizationName.trim().length < 2) { setError(isJoin ? 'Completa tu nombre y el código de la organización (ej. tenant-...).' : 'Completa tu nombre y el nombre de la organización.'); return; }
         setBusyStep('register');
         try {
           await registerCognito(normalizedEmail, password, name.trim());
-          savePendingRegistration(normalizedEmail, organizationName.trim());
+          savePendingRegistration(normalizedEmail, organizationName.trim(), registerMode);
           setPhase('confirm'); setNotice('Te enviamos un código. Confirma tu correo para preparar tu organización.');
           // The password stays only in component memory until the confirmation flow ends.
         } catch (cause) { setPassword(''); setConfirmPassword(''); setError(readableAuthError(cause, phase)); }
@@ -117,7 +124,7 @@ export default function AuthPage({ register = false, redirect = '/app' }: { regi
           const result = await completeConfirmedRegistration({
             email: normalizedEmail, password, organizationName: organizationName.trim(), code: code.trim(),
             confirm: confirmCognito, signIn: signInWithCognito, confirmSignIn: ({ challengeResponse }) => confirmCognitoSignIn(challengeResponse),
-            provision: provisionCognito, refresh: refreshProvisionedCognitoSession, hasOrganization: cognitoHasOrganization,
+            provision: isJoin ? joinCognitoOrganization : provisionCognito, refresh: refreshProvisionedCognitoSession, hasOrganization: cognitoHasOrganization,
           });
           localStorage.setItem(CONFIRMED_KEY, normalizedEmail);
           setPassword(''); setConfirmPassword('');
@@ -149,7 +156,7 @@ export default function AuthPage({ register = false, redirect = '/app' }: { regi
       if (phase === 'challenge') {
         setBusyStep('signin'); setNotice('Verificando el paso de seguridad...');
         try {
-          const result = await completeRegistrationChallenge({ challengeResponse: challengeResponse.trim(), confirmSignIn: ({ challengeResponse }) => confirmCognitoSignIn(challengeResponse), organizationName: organizationName.trim(), provision: provisionCognito, refresh: refreshProvisionedCognitoSession, hasOrganization: cognitoHasOrganization });
+          const result = await completeRegistrationChallenge({ challengeResponse: challengeResponse.trim(), confirmSignIn: ({ challengeResponse }) => confirmCognitoSignIn(challengeResponse), organizationName: organizationName.trim(), provision: activeProvisioner, refresh: refreshProvisionedCognitoSession, hasOrganization: cognitoHasOrganization });
           if (result.status === 'challenge') { setChallengeStep(result.step); setError('El paso no se completó. Revisa el dato e inténtalo otra vez.'); setNotice(''); return; }
           clearPendingRegistration(); setNotice('Entrando a ProFiles...'); navigate('/app');
         } catch (cause) { const err = cause as Error & { stage?: string }; if (err.stage === 'provision' || err.stage === 'refresh') setPhase('finish'); setNotice(''); setError(readableAuthError(cause, 'challenge')); }
@@ -157,6 +164,18 @@ export default function AuthPage({ register = false, redirect = '/app' }: { regi
         return;
       }
       await finishProvisioning();
+      return;
+    }
+
+    if (!register && !localAuth && phase === 'challenge') {
+      setBusyStep('signin'); setNotice('Verificando el paso de seguridad...');
+      try {
+        const confirmed = await confirmCognitoSignIn(challengeResponse.trim());
+        if (!confirmed.isSignedIn) { setChallengeStep(confirmed.nextStep?.signInStep || 'UNKNOWN'); setError('Completa el paso solicitado.'); setNotice(''); return; }
+        if (!await cognitoHasOrganization()) { navigate('/register'); return; }
+        navigate(redirect.startsWith('/app') ? redirect : '/app');
+      } catch (cause) { setNotice(''); setError(readableAuthError(cause, 'challenge')); }
+      finally { setBusyStep(''); }
       return;
     }
 
@@ -175,7 +194,12 @@ export default function AuthPage({ register = false, redirect = '/app' }: { regi
         localStorage.setItem('cloudportfolio.user', JSON.stringify(result.user));
       } else {
         const result = await signInWithCognito(normalizedEmail, password);
-        if (!result.isSignedIn) throw Error('Tu cuenta requiere un paso adicional de seguridad.');
+        if (!result.isSignedIn) {
+          setChallengeStep(result.nextStep?.signInStep || 'UNKNOWN');
+          setPhase('challenge');
+          setNotice('Tu cuenta requiere confirmar una contraseña nueva o código de seguridad.');
+          return;
+        }
         if (!await cognitoHasOrganization()) { navigate('/register'); return; }
       }
       navigate(redirect.startsWith('/app') ? redirect : '/app');
@@ -187,26 +211,32 @@ export default function AuthPage({ register = false, redirect = '/app' }: { regi
   const busyLabel = busyStep === 'register' ? 'Creando tu cuenta...' : busyStep === 'confirm' ? 'Confirmando correo...' : busyStep === 'signin' ? 'Iniciando sesión...' : busyStep === 'provision' ? 'Preparando tu organización...' : busyStep === 'refresh' ? 'Actualizando tus permisos...' : busyStep === 'resend' ? 'Enviando código...' : 'Procesando...';
   const challengeLabel = challengeStep.includes('NEW_PASSWORD') ? 'Crea una contraseña nueva' : challengeStep.includes('TOTP') ? 'Código de tu aplicación de autenticación' : 'Código de seguridad';
 
-  return <div className="auth-page"><div className="auth-backdrop"/><div className="auth-side"><Brand light/><div className="auth-side-content"><div className="section-kicker">ProFiles · PROJECT PORTFOLIO MANAGEMENT</div><h1>{register ? 'Un espacio común para avanzar.' : 'La estrategia merece una ejecución clara.'}</h1><p>{register ? 'Crea una organización para tu equipo y conecta iniciativas, personas y decisiones.' : 'Entra a tu espacio de trabajo y continúa conectando tus iniciativas con resultados.'}</p><div className="auth-side-art"><div className="auth-art-circle circle-a"/><div className="auth-art-circle circle-b"/><div className="auth-art-card"><span><ChartNoAxesCombined size={20}/></span><b>Visión de portafolio</b><small>Personas · Proyectos · Presupuesto</small><div className="auth-art-bars"><i/><i/><i/><i/><i/><i/><i/></div></div><FoliMascot variant="avatar" className="auth-foli" alt="Foli, mascota de ProFiles"/></div></div><span className="auth-side-foot">ProFiles · Gestión de portafolios de proyectos</span></div><main className="auth-main"><a className="auth-back" href="/" onClick={e => { e.preventDefault(); navigate('/'); }}>← Volver al inicio</a><div className="auth-card"><div className="auth-mobile-brand"><Brand/></div><div className="auth-heading"><span className="section-kicker">{register ? 'NUEVA ORGANIZACIÓN' : 'BIENVENIDO DE NUEVO'}</span><h2>{register ? phase === 'form' ? 'Crea tu organización' : phase === 'confirm' ? 'Confirma tu correo' : phase === 'challenge' ? 'Verificación de seguridad' : 'Termina de preparar tu espacio' : 'Inicia sesión'}</h2><p>{register ? localAuth ? 'El entorno local creará un espacio privado y su cuenta administradora.' : phase === 'form' ? 'Confirma tu correo y prepararemos el acceso a tu organización.' : phase === 'confirm' ? `Enviamos un código a ${email || 'tu correo'}.` : phase === 'signin' ? 'Tu correo está confirmado. Inicia sesión para continuar con la configuración.' : phase === 'challenge' ? 'Completa el paso de seguridad solicitado por tu cuenta.' : 'Vamos a terminar de configurar tu organización.' : 'Ingresa con las credenciales de tu organización.'}</p></div>
+  return <div className="auth-page"><div className="auth-backdrop"/><div className="auth-side"><Brand light/><div className="auth-side-content"><div className="section-kicker">ProFiles · PROJECT PORTFOLIO MANAGEMENT</div><h1>{register ? 'Un espacio común para avanzar.' : 'La estrategia merece una ejecución clara.'}</h1><p>{register ? 'Crea una organización para tu equipo o únete a una existente con su código de invitación.' : 'Entra a tu espacio de trabajo como administrador o miembro de tu organización.'}</p><div className="auth-side-art"><div className="auth-art-circle circle-a"/><div className="auth-art-circle circle-b"/><div className="auth-art-card"><span><ChartNoAxesCombined size={20}/></span><b>Visión de portafolio</b><small>Personas · Proyectos · Presupuesto</small><div className="auth-art-bars"><i/><i/><i/><i/><i/><i/><i/></div></div><FoliMascot variant="avatar" className="auth-foli" alt="Foli, mascota de ProFiles"/></div></div><span className="auth-side-foot">ProFiles · Gestión de portafolios de proyectos</span></div><main className="auth-main"><a className="auth-back" href="/" onClick={e => { e.preventDefault(); navigate('/'); }}>← Volver al inicio</a><div className="auth-card"><div className="auth-mobile-brand"><Brand/></div><div className="auth-heading"><span className="section-kicker">{register ? (isJoin ? 'UNIRSE A UN EQUIPO' : 'NUEVA ORGANIZACIÓN') : 'BIENVENIDO DE NUEVO'}</span><h2>{register ? phase === 'form' ? (isJoin ? 'Únete a una organización' : 'Crea tu organización') : phase === 'confirm' ? 'Confirma tu correo' : phase === 'challenge' ? 'Verificación de seguridad' : 'Termina de preparar tu espacio' : 'Inicia sesión'}</h2><p>{register ? localAuth ? 'El entorno local creará un espacio privado y su cuenta administradora.' : phase === 'form' ? (isJoin ? 'Ingresa el código de organización (ID de tenant) compartido por tu administrador.' : 'Confirma tu correo y prepararemos el acceso a tu organización.') : phase === 'confirm' ? `Enviamos un código a ${email || 'tu correo'}.` : phase === 'signin' ? 'Tu correo está confirmado. Inicia sesión para continuar con la configuración.' : phase === 'challenge' ? 'Completa el paso de seguridad solicitado por tu cuenta.' : 'Vamos a terminar de configurar tu organización.' : 'Ingresa con tu correo de administrador o miembro de organización.'}</p></div>
+      {register && !localAuth && phase === 'form' && (
+        <div className="auth-mode-tabs" role="tablist" aria-label="Tipo de registro">
+          <button type="button" role="tab" aria-selected={registerMode === 'create'} className={`auth-mode-tab ${registerMode === 'create' ? 'is-active' : ''}`} onClick={() => { setRegisterMode('create'); setError(''); }}>Crear organización</button>
+          <button type="button" role="tab" aria-selected={registerMode === 'join'} className={`auth-mode-tab ${registerMode === 'join' ? 'is-active' : ''}`} onClick={() => { setRegisterMode('join'); setError(''); }}>Unirme con código</button>
+        </div>
+      )}
       {register && !localAuth && <ol className="auth-progress" aria-label="Pasos para crear tu organización">{['Cuenta', 'Correo', 'Espacio'].map((label, index) => <li key={label} className={registrationStep === index ? 'is-current' : registrationStep > index ? 'is-complete' : ''} aria-current={registrationStep === index ? 'step' : undefined}><span>{registrationStep > index ? '✓' : index + 1}</span>{label}</li>)}</ol>}
-      {register && !localAuth && phase !== 'form' ? <form onSubmit={submit}>
+      {((register && !localAuth && phase !== 'form') || (!register && !localAuth && phase === 'challenge')) ? <form onSubmit={submit}>
         {(phase === 'confirm' || phase === 'signin') && <><label htmlFor="resume-email">Correo electrónico</label><div className="auth-input"><Users size={17}/><input id="resume-email" type="email" autoComplete="username" required maxLength={254} value={email} onChange={e => setEmail(e.target.value)}/></div></>}
         {phase === 'confirm' && <><label htmlFor="confirm-code">Código de verificación</label><div className="auth-input"><ShieldCheck size={17}/><input id="confirm-code" inputMode="numeric" autoComplete="one-time-code" required value={code} onChange={e => setCode(e.target.value)} maxLength={20} placeholder="Código del correo"/></div><button className="auth-link-button" type="button" disabled={busy} onClick={async () => { setBusyStep('resend'); setError(''); setNotice(''); try { await resendCognito(email.trim()); setNotice('Enviamos un nuevo código a tu correo.'); } catch (cause) { setError(readableAuthError(cause, 'confirm')); } finally { setBusyStep(''); } }}>Enviar un código nuevo</button></>}
         {phase === 'signin' && <><label htmlFor="resume-password">Contraseña</label><div className="auth-input"><ShieldCheck size={17}/><input id="resume-password" type={showPassword ? 'text' : 'password'} autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)}/><button type="button" className="password-toggle" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{showPassword ? <EyeOff size={17}/> : <Eye size={17}/>}</button></div></>}
         {phase === 'challenge' && <><p className="auth-help">{challengeStep.includes('NEW_PASSWORD') ? 'Tu cuenta requiere que establezcas una contraseña nueva.' : 'Escribe el código enviado por Cognito o generado por tu aplicación de autenticación.'}</p><label htmlFor="challenge-response">{challengeLabel}</label><div className="auth-input"><ShieldCheck size={17}/><input id="challenge-response" type={challengeStep.includes('NEW_PASSWORD') ? 'password' : 'text'} autoComplete={challengeStep.includes('NEW_PASSWORD') ? 'new-password' : 'one-time-code'} required value={challengeResponse} onChange={e => setChallengeResponse(e.target.value)} maxLength={challengeStep.includes('NEW_PASSWORD') ? 256 : 128}/></div></>}
-        {(phase === 'signin' || phase === 'finish' || phase === 'challenge') && <><label htmlFor="resume-organization">Nombre de la organización</label><div className="auth-input"><Layers size={17}/><input id="resume-organization" autoComplete="organization" required minLength={2} maxLength={100} value={organizationName} onChange={e => { setOrganizationName(e.target.value); localStorage.setItem(ORG_KEY, e.target.value); }}/></div></>}
+        {register && (phase === 'signin' || phase === 'finish' || phase === 'challenge') && <><label htmlFor="resume-organization">{isJoin ? 'Código de organización (tenantId)' : 'Nombre de la organización'}</label><div className="auth-input"><Layers size={17}/><input id="resume-organization" autoComplete="organization" required minLength={2} maxLength={100} value={organizationName} onChange={e => { setOrganizationName(e.target.value); localStorage.setItem(ORG_KEY, e.target.value); }}/></div></>}
         {notice && <p className="auth-status" role="status" aria-live="polite">{notice}</p>}{error && <p className="auth-error" id="auth-error" role="alert">{error}</p>}
         <button className="button button-primary auth-submit" disabled={busy || (phase === 'confirm' && !code.trim()) || (phase === 'signin' && !password) || (phase === 'challenge' && !challengeResponse.trim())}>{busy ? <><span className="button-spinner"/>{busyLabel}</> : <>{phase === 'confirm' ? 'Confirmar y continuar' : phase === 'signin' ? 'Iniciar sesión y continuar' : phase === 'challenge' ? 'Verificar y continuar' : 'Reintentar configuración'}<ArrowRight size={17}/></>}</button>
         {phase === 'confirm' && <button className="auth-link-button" type="button" disabled={busy} onClick={() => { localStorage.setItem(CONFIRMED_KEY, email.trim().toLowerCase()); setPassword(''); setConfirmPassword(''); setPhase('signin'); setNotice('Inicia sesión para terminar la configuración.'); setError(''); }}>Ya confirmé mi correo</button>}
         {phase === 'finish' && <button className="auth-link-button" type="button" disabled={busy} onClick={() => { setPhase('signin'); setNotice('Inicia sesión para retomar la configuración.'); setError(''); }}>Iniciar sesión con otra contraseña</button>}
       </form> : <form onSubmit={submit}>
-        {canRegister && <><label htmlFor="organization-name">Nombre de la organización</label><div className="auth-input"><Layers size={17}/><input id="organization-name" autoComplete="organization" required minLength={2} maxLength={100} value={organizationName} onChange={e => setOrganizationName(e.target.value)} placeholder="Equipo de estrategia"/></div><label htmlFor="auth-name">Tu nombre</label><div className="auth-input"><Users size={17}/><input id="auth-name" autoComplete="name" required minLength={2} maxLength={100} value={name} onChange={e => setName(e.target.value)} placeholder="Nombre y apellido"/></div></>}
+        {canRegister && <><label htmlFor="organization-name">{isJoin ? 'Código de organización (ID de tenant)' : 'Nombre de la organización'}</label><div className="auth-input"><Layers size={17}/><input id="organization-name" autoComplete="organization" required minLength={2} maxLength={100} value={organizationName} onChange={e => setOrganizationName(e.target.value)} placeholder={isJoin ? 'Ej. tenant-a1b2c3d4...' : 'Equipo de estrategia'}/></div><label htmlFor="auth-name">Tu nombre</label><div className="auth-input"><Users size={17}/><input id="auth-name" autoComplete="name" required minLength={2} maxLength={100} value={name} onChange={e => setName(e.target.value)} placeholder="Nombre y apellido"/></div></>}
         <label htmlFor="auth-email">Correo electrónico</label><div className="auth-input"><Users size={17}/><input id="auth-email" type="email" autoComplete="username" required maxLength={254} value={email} onChange={e => setEmail(e.target.value)} placeholder="nombre@organizacion.com" aria-describedby={error ? 'auth-error' : undefined}/></div>
         <label htmlFor="auth-password">Contraseña</label><div className="auth-input"><ShieldCheck size={17}/><input id="auth-password" type={showPassword ? 'text' : 'password'} autoComplete={register ? 'new-password' : 'current-password'} required minLength={register ? 12 : 1} maxLength={register && localAuth ? 128 : 256} value={password} onChange={e => setPassword(e.target.value)} placeholder={register ? localAuth ? 'Mínimo 12 caracteres' : '12 caracteres y un símbolo' : 'Ingresa tu contraseña'} aria-describedby={error ? 'auth-error' : canRegister ? 'password-help' : undefined}/><button type="button" className="password-toggle" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{showPassword ? <EyeOff size={17}/> : <Eye size={17}/>}</button></div>
         {canRegister && <><label htmlFor="auth-confirm-password">Confirma la contraseña</label><div className="auth-input"><ShieldCheck size={17}/><input id="auth-confirm-password" type={showPassword ? 'text' : 'password'} autoComplete="new-password" required minLength={12} maxLength={localAuth ? 128 : 256} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="Repite la contraseña" aria-describedby="password-help"/></div><p className="auth-help" id="password-help">{localAuth ? 'Entre 12 y 128 caracteres, con mayúscula, minúscula y número.' : 'Entre 12 y 256 caracteres, con mayúscula, minúscula, número y símbolo.'}</p></>}
         {notice && <p className="auth-status" role="status" aria-live="polite">{notice}</p>}{error && <p className="auth-error" id="auth-error" role="alert">{error}</p>}
-        <button className="button button-primary auth-submit" disabled={busy || !email || !password || (canRegister && (!name || !organizationName || !confirmPassword))}>{busy ? <><span className="button-spinner"/>{busyLabel || (register ? 'Creando espacio...' : 'Verificando acceso...')}</> : register ? 'Crear organización' : 'Iniciar sesión'}{!busy && <ArrowRight size={17}/>}</button>
-        {!register && <p className="auth-secure"><ShieldCheck size={15}/> Conexión protegida · Acceso de tu organización</p>}
+        <button className="button button-primary auth-submit" disabled={busy || !email || !password || (canRegister && (!name || !organizationName || !confirmPassword))}>{busy ? <><span className="button-spinner"/>{busyLabel || (register ? 'Creando espacio...' : 'Verificando acceso...')}</> : register ? (isJoin ? 'Unirme a la organización' : 'Crear organización') : 'Iniciar sesión'}{!busy && <ArrowRight size={17}/>}</button>
+        {!register && <p className="auth-secure"><ShieldCheck size={15}/> Conexión protegida · Acceso para Administradores y Miembros de Organización</p>}
       </form>}
-      <div className="auth-switch">{register ? '¿Ya tienes acceso?' : '¿Aún no tienes una cuenta?'} <a href={register ? '/login' : '/register'}>{register ? 'Iniciar sesión' : 'Crear organización'}</a></div><p className="auth-legal">{register ? 'El registro crea una organización independiente. La contraseña nunca se guarda para recuperar el proceso.' : 'Al continuar, accedes a tu espacio de trabajo de ProFiles.'}</p></div></main></div>;
+      <div className="auth-switch">{register ? '¿Ya tienes acceso?' : '¿Crear organización o unirte con código?'} <a href={register ? '/login' : '/register'}>{register ? 'Iniciar sesión' : 'Ir a registro'}</a></div><p className="auth-legal">{register ? (isJoin ? 'Te unirás al espacio compartido de la organización indicada tras verificar tu correo.' : 'El registro crea una organización independiente. La contraseña nunca se guarda para recuperar el proceso.') : 'Si tu administrador ya creó tu cuenta en Usuarios, ingresa directamente con tu correo y contraseña.'}</p></div></main></div>;
 }

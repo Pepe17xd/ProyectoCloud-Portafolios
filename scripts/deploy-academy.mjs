@@ -2,8 +2,6 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
-import { hasInlineMetaConfig, metaConfigRequested, metaSecretArnPattern, metaSecretName, readExistingMetaSecret, readMetaConfigFromEnvironment, stripMetaInputs, upsertMetaSecret, validateExistingMetaSecretArn } from './whatsapp-secrets.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 export const services = ['identity', 'portfolio', 'project', 'resource', 'budget', 'priority'];
@@ -12,9 +10,7 @@ const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 // Shell variables take precedence. Empty entries never mask AWS profiles or instance roles.
 const envKeys = new Set([
-  'AWS_REGION', 'AWS_DEFAULT_REGION', 'AWS_ACADEMY_ALLOWED_ACCOUNT', 'LAB_ROLE_ARN', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_PROFILE', 'AWS_STAGE', 'AMPLIFY_APP_NAME', 'AMPLIFY_BRANCH', 'CORS_ORIGIN', 'NOTIFICATION_MODE', 'WHATSAPP_META_SECRET_ARN',
-  'WHATSAPP_META_ENABLED', 'WHATSAPP_PHONE_NUMBER_ID', 'WHATSAPP_WABA_ID', 'WHATSAPP_ACCESS_TOKEN', 'WHATSAPP_APP_SECRET', 'WHATSAPP_WEBHOOK_VERIFY_TOKEN', 'WHATSAPP_GRAPH_VERSION', 'WHATSAPP_TEMPLATES_APPROVED',
-  'WHATSAPP_TEMPLATE_VERIFICATION_NAME', 'WHATSAPP_TEMPLATE_VERIFICATION_LANGUAGE', 'WHATSAPP_TEMPLATE_REMINDER_NAME', 'WHATSAPP_TEMPLATE_REMINDER_LANGUAGE', 'WHATSAPP_TEMPLATE_AUTOMATION_NAME', 'WHATSAPP_TEMPLATE_AUTOMATION_LANGUAGE', 'WHATSAPP_TEMPLATE_RISK_ALERT_NAME', 'WHATSAPP_TEMPLATE_RISK_ALERT_LANGUAGE', 'WHATSAPP_TEMPLATE_WEEKLY_SUMMARY_NAME', 'WHATSAPP_TEMPLATE_WEEKLY_SUMMARY_LANGUAGE',
+  'AWS_REGION', 'AWS_DEFAULT_REGION', 'AWS_ACADEMY_ALLOWED_ACCOUNT', 'LAB_ROLE_ARN', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_PROFILE', 'AWS_STAGE', 'AMPLIFY_APP_NAME', 'AMPLIFY_BRANCH', 'CORS_ORIGIN', 'NOTIFICATION_MODE', 'OPS_ALERT_EMAIL',
 ]);
 export function loadAcademyEnv(path = resolve(root, '.env'), target = process.env) {
   if (!existsSync(path)) return target;
@@ -53,19 +49,9 @@ function command(bin, args, options = {}) {
 }
 function json(bin, args, options) { const s = command(bin, args, options); try { return JSON.parse(s); } catch { throw new Error(`${bin} returned invalid JSON`); } }
 export function createRealIO(region) {
-  const cleanProcessEnv = stripMetaInputs(process.env);
-  const aws = (args) => json('aws', [...args, '--region', region, '--output', 'json'], { env: cleanProcessEnv });
-  const secretsManager = new SecretsManagerClient({ region });
+  const aws = (args) => json('aws', [...args, '--region', region, '--output', 'json'], { env: process.env });
   return {
     aws,
-    canLabRoleReadWhatsAppSecret(roleArn, resourceArn) {
-      try {
-        const result = aws(['iam', 'simulate-principal-policy', '--policy-source-arn', roleArn, '--action-names', 'secretsmanager:GetSecretValue', '--resource-arns', resourceArn]);
-        return result.EvaluationResults?.[0]?.EvalDecision === 'allowed';
-      } catch { return false; }
-    },
-    putWhatsAppSecret: ({ name, account, stage, config }) => upsertMetaSecret(secretsManager, { name, account, stage, config }),
-    readWhatsAppSecret: (arn, context) => readExistingMetaSecret(secretsManager, arn, context),
     deploy(dir, env, stage) {
       const cwd = resolve(root, dir), original = readFileSync(resolve(cwd, 'serverless.yml'), 'utf8');
       // Only service configurations have Lambda execution roles. The temporary config
@@ -91,7 +77,7 @@ export async function orchestrate(io, options = {}) {
   const stage = options.stage || process.env.AWS_STAGE || 'academy';
   const sourceEnv = options.env || process.env;
   if (!region || !/^[a-z0-9-]+$/.test(region) || !/^[a-zA-Z0-9-]+$/.test(stage)) throw new Error('Set a valid AWS_REGION and AWS_STAGE');
-  const env = stripMetaInputs({ ...sourceEnv, AWS_REGION: region, AWS_STAGE: stage });
+  const env = { ...sourceEnv, AWS_REGION: region, AWS_STAGE: stage };
   // Never trust stale IDs or endpoints supplied by an earlier lab.
   delete env.COGNITO_USER_POOL_ID; delete env.COGNITO_CLIENT_ID;
   for (const s of services) delete env[`${s.toUpperCase()}_API_URL`];
@@ -106,57 +92,14 @@ export async function orchestrate(io, options = {}) {
   env.CORS_ORIGIN ||= '*';
   const outputs = (name) => Object.fromEntries((io.aws(['cloudformation', 'describe-stacks', '--stack-name', `cloudportfolio-${name}-${stage}`]).Stacks?.[0]?.Outputs || []).map(x => [x.OutputKey, x.OutputValue]));
   const deploy = (name, infra = false) => { io.log(`Desplegando ${name}`); io.deploy(`${infra ? 'infrastructure' : 'services'}/${name}${infra ? '' : '-service'}`, env, stage); };
-  let metaRequested = metaConfigRequested(sourceEnv);
-  let metaArn = '';
-  let whatsappLimitation = '';
+  // E-mail goes through Amazon SNS (SES is not available in AWS Academy). Set NOTIFICATION_MODE=disabled to turn it off.
+  const mode = (sourceEnv.NOTIFICATION_MODE || 'sns-email').trim();
+  if (!['sns-email', 'disabled'].includes(mode)) throw new Error('NOTIFICATION_MODE must be sns-email or disabled for AWS deployments.');
+  env.NOTIFICATION_MODE = mode;
+  if (env.OPS_ALERT_EMAIL && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(env.OPS_ALERT_EMAIL)) throw new Error('OPS_ALERT_EMAIL is not a valid e-mail address.');
   if (options.checkOnly) {
-    if (metaRequested && hasInlineMetaConfig(sourceEnv)) readMetaConfigFromEnvironment(sourceEnv);
-    else if (metaRequested && !sourceEnv.WHATSAPP_META_SECRET_ARN?.trim()) throw new Error('WhatsApp was requested but has no complete credentials or existing secret ARN.');
-    else if (metaRequested) validateExistingMetaSecretArn(sourceEnv.WHATSAPP_META_SECRET_ARN.trim(), { account: caller.Account, region, stage });
-    const resourceArn = metaRequested ? (sourceEnv.WHATSAPP_META_SECRET_ARN?.trim() || metaSecretArnPattern(region, caller.Account, stage)) : '';
-    const roleCanRead = metaRequested && typeof io.canLabRoleReadWhatsAppSecret === 'function' && await io.canLabRoleReadWhatsAppSecret(role.Arn, resourceArn);
-    const whatsapp = !metaRequested ? 'deshabilitado' : roleCanRead ? 'configuración validada; secreto aún no escrito' : 'deshabilitado: no se pudo confirmar secretsmanager:GetSecretValue para LabRole';
-    io.log(`Preflight de solo lectura: cuenta ${caller.Account}, región ${region}, rol ${role.RoleName}; WhatsApp ${whatsapp}. No se escribieron secretos ni recursos.`);
-    return { account: caller.Account, region, role: role.Arn, whatsapp: !metaRequested ? 'disabled' : roleCanRead ? 'configured-pending-secret-write' : 'disabled-permission-unverified' };
-  }
-  if (metaRequested) {
-    const suppliedArn = sourceEnv.WHATSAPP_META_SECRET_ARN?.trim();
-    const inlineConfig = hasInlineMetaConfig(sourceEnv);
-    if (suppliedArn && inlineConfig) throw new Error('Provide either complete WhatsApp credentials or WHATSAPP_META_SECRET_ARN, not both.');
-    if (!inlineConfig && !suppliedArn) {
-      throw new Error('WhatsApp was requested but credentials are incomplete; provide the complete Meta configuration or an existing WHATSAPP_META_SECRET_ARN.');
-    }
-    if (inlineConfig) readMetaConfigFromEnvironment(sourceEnv);
-    else validateExistingMetaSecretArn(suppliedArn, { account: caller.Account, region, stage });
-    const permissionResourceArn = suppliedArn || metaSecretArnPattern(region, caller.Account, stage);
-    const roleCanRead = typeof io.canLabRoleReadWhatsAppSecret === 'function' && await io.canLabRoleReadWhatsAppSecret(role.Arn, permissionResourceArn);
-    if (!roleCanRead) {
-      metaRequested = false;
-      io.log('WhatsApp disabled: LabRole does not have a verifiable secretsmanager:GetSecretValue grant for this stage. No Meta secret was written.');
-    } else {
-      try {
-        if (inlineConfig) {
-          const config = readMetaConfigFromEnvironment(sourceEnv);
-          const name = metaSecretName(caller.Account, stage);
-          if (typeof io.putWhatsAppSecret !== 'function') throw new Error('Secrets Manager integration is unavailable; WhatsApp was not enabled.');
-          metaArn = await io.putWhatsAppSecret({ name, account: caller.Account, stage, config });
-        } else {
-          if (typeof io.readWhatsAppSecret !== 'function') throw new Error('Secrets Manager integration is unavailable; WhatsApp was not enabled.');
-          await io.readWhatsAppSecret(suppliedArn, { account: caller.Account, region, stage });
-          metaArn = suppliedArn;
-        }
-        env.NOTIFICATION_MODE = 'meta'; env.WHATSAPP_META_SECRET_ARN = metaArn;
-      } catch (error) {
-        if (!/^(?:AWS LabRole lacks|Could not access the WhatsApp secret|The configured WhatsApp secret was not found)/.test(error.message || '')) throw error;
-        metaRequested = false;
-        whatsappLimitation = 'deshabilitado: LabRole o credenciales de despliegue no pueden usar el secreto de Secrets Manager';
-        io.log(`WhatsApp ${whatsappLimitation}. El buzón interno y el resto del despliegue continúan.`);
-      }
-    }
-    if (!metaRequested) { env.NOTIFICATION_MODE = 'disabled'; delete env.WHATSAPP_META_SECRET_ARN; }
-  } else {
-    env.NOTIFICATION_MODE = 'disabled';
-    delete env.WHATSAPP_META_SECRET_ARN;
+    io.log(`Preflight de solo lectura: cuenta ${caller.Account}, región ${region}, rol ${role.RoleName}; notificaciones por correo (SNS): ${mode === 'sns-email' ? 'habilitadas' : 'deshabilitadas'}; alertas operativas: ${env.OPS_ALERT_EMAIL ? 'con suscripción de correo' : 'sin correo (solo tema SNS)'}. No se desplegó ni escribió ningún recurso.`);
+    return { account: caller.Account, region, role: role.Arn, notifications: mode };
   }
   deploy('auth', true);
   const auth = outputs('auth');
@@ -165,7 +108,7 @@ export async function orchestrate(io, options = {}) {
   deploy('storage', true); env.DOCUMENTS_BUCKET = requiredOutput(outputs('storage'), 'BucketName', 'storage');
   deploy('events', true); const events = outputs('events');
   env.DOMAIN_TOPIC_ARN = requiredOutput(events, 'DomainTopicArn', 'events'); env.BUDGET_QUEUE_ARN = requiredOutput(events, 'BudgetQueueArn', 'events');
-  env.WHATSAPP_QUEUE_ARN = requiredOutput(events, 'WhatsAppQueueArn', 'events'); env.WHATSAPP_QUEUE_URL = requiredOutput(events, 'WhatsAppQueueUrl', 'events');
+  env.NOTIFICATION_QUEUE_ARN = requiredOutput(events, 'NotificationQueueArn', 'events'); env.EMAIL_TOPIC_ARN = requiredOutput(events, 'EmailTopicArn', 'events');
   const urls = {};
   for (const name of services) {
     deploy(name);
@@ -204,14 +147,16 @@ export async function orchestrate(io, options = {}) {
     if (status !== 'SUCCEED') throw new Error('Amplify deployment timed out');
     if (!app.defaultDomain) throw new Error('Amplify app has no default domain');
     const frontend = `https://${branch}.${app.defaultDomain}`;
-    const webhook = `${urls.identity}/webhooks/meta/whatsapp`;
-    io.log(`Amplify: ${frontend}\nAPIs: ${JSON.stringify(urls)}\nWebhook Meta: ${webhook}\nWhatsApp: ${metaRequested ? 'configurado en Secrets Manager; suscripción Meta manual pendiente' : whatsappLimitation || 'deshabilitado'}\nStacks: auth, storage, events, ${services.join(', ')}. Verificación real de CRUD y aislamiento pendiente.`);
-    return { account: caller.Account, urls, frontend, appId: app.appId, webhook, whatsapp: metaRequested ? 'configured' : 'disabled', whatsappSecretArn: metaArn || undefined };
+    io.log(`Amplify: ${frontend}
+APIs: ${JSON.stringify(urls)}
+Correo (SNS): ${mode === 'sns-email' ? 'habilitado; cada usuario confirma su suscripción desde Notificaciones' : 'deshabilitado'}
+Stacks: auth, storage, events, ${services.join(', ')}. Verificación real de CRUD y aislamiento pendiente.`);
+    return { account: caller.Account, urls, frontend, appId: app.appId, notifications: mode };
   } finally { io.cleanup(); }
 }
 function preflight() {
   if (Number(process.versions.node.split('.')[0]) < 20) throw new Error('Node.js 20 or later required');
-  const cleanEnv = stripMetaInputs(process.env);
+  const cleanEnv = process.env;
   command(npm, ['--version'], { env: cleanEnv }); command(python, ['--version'], { env: cleanEnv }); command('docker', ['--version'], { env: cleanEnv }); command('docker', ['info'], { env: cleanEnv }); command('aws', ['--version'], { env: cleanEnv }); command(npx, ['--no-install', 'serverless', '--version'], { env: cleanEnv });
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -15,7 +15,7 @@ function fixture() {
       if (service === 'iam') return { Role: { Arn: 'arn:aws:iam::123456789012:role/LabRole', RoleName: 'LabRole' } };
       if (service === 'cloudformation') {
         const name = args[args.indexOf('--stack-name') + 1].replace('cloudportfolio-', '').replace('-academy', '');
-        const data = { auth: { UserPoolId: 'pool', UserPoolClientId: 'client' }, storage: { BucketName: 'bucket' }, events: { DomainTopicArn: 'topic', BudgetQueueArn: 'queue', WhatsAppQueueArn: 'whatsapp-arn', WhatsAppQueueUrl: 'https://sqs.example/queue' } }[name] || { HttpApiUrl: `https://${name}.example` };
+        const data = { auth: { UserPoolId: 'pool', UserPoolClientId: 'client' }, storage: { BucketName: 'bucket' }, events: { DomainTopicArn: 'topic', BudgetQueueArn: 'queue', NotificationQueueArn: 'notification-arn', EmailTopicArn: 'email-topic-arn' } }[name] || { HttpApiUrl: `https://${name}.example` };
         return { Stacks: [{ Outputs: Object.entries(data).map(([OutputKey, OutputValue]) => ({ OutputKey, OutputValue })) }] };
       }
       if (op === 'list-apps') return { apps: state.apps };
@@ -33,8 +33,12 @@ test('clean lab discovers Cognito, deploys services in order and publishes Ampli
   assert.deepEqual(state.deployments.map(x => x.dir), ['infrastructure/auth','infrastructure/storage','infrastructure/events', ...services.map(s => `services/${s}-service`), 'services/identity-service','services/project-service']);
   assert.equal(state.deployments[0].env.COGNITO_USER_POOL_ID, undefined);
   for (const d of state.deployments.slice(3)) { assert.equal(d.env.COGNITO_USER_POOL_ID, 'pool'); assert.equal(d.env.COGNITO_CLIENT_ID, 'client'); }
-  assert.equal(state.deployments.find(x => x.dir === 'services/identity-service').env.WHATSAPP_QUEUE_ARN, 'whatsapp-arn');
-  assert.equal(state.deployments.find(x => x.dir === 'services/identity-service').env.WHATSAPP_QUEUE_URL, 'https://sqs.example/queue');
+  const identityEnv = state.deployments.find(x => x.dir === 'services/identity-service').env;
+  assert.equal(identityEnv.NOTIFICATION_QUEUE_ARN, 'notification-arn');
+  assert.equal(identityEnv.EMAIL_TOPIC_ARN, 'email-topic-arn');
+  assert.equal(identityEnv.DOMAIN_TOPIC_ARN, 'topic');
+  assert.equal(identityEnv.NOTIFICATION_MODE, 'sns-email');
+  assert.equal(result.notifications, 'sns-email');
   for (const name of services) assert.equal(state.builds[0][`VITE_API_${name.toUpperCase()}`], `https://${name}.example`);
   assert.equal(result.frontend, 'https://main.example.amplifyapp.com');
   assert.ok(state.calls.indexOf('upload') < state.calls.indexOf('amplify:start-deployment'));
@@ -99,5 +103,20 @@ test('incomplete credentials and expiry are rejected without leaking diagnostics
 test('all stacks exclude environment files from packages', () => {
   for (const dir of ['infrastructure/auth','infrastructure/storage','infrastructure/events', ...services.map(s => `services/${s}-service`)]) {
     const yaml = readFileSync(new URL(`../${dir}/serverless.yml`, import.meta.url), 'utf8'); assert.match(yaml, /'!\*\*\/\.env'/); assert.match(yaml, /'!\*\*\/\.env\.\*'/);
+  }
+});
+
+test('e-mail notifications can be disabled and unsupported modes are rejected', async () => {
+  const { io, state } = fixture();
+  await orchestrate(io, { region: 'us-east-1', env: { NOTIFICATION_MODE: 'disabled' } });
+  assert.equal(state.deployments.find(x => x.dir === 'services/identity-service').env.NOTIFICATION_MODE, 'disabled');
+  await assert.rejects(orchestrate(fixture().io, { region: 'us-east-1', env: { NOTIFICATION_MODE: 'local' } }), /NOTIFICATION_MODE/);
+  await assert.rejects(orchestrate(fixture().io, { region: 'us-east-1', env: { OPS_ALERT_EMAIL: 'not-an-email' } }), /OPS_ALERT_EMAIL/);
+});
+test('no Meta, WhatsApp or Secrets Manager dependency remains in the deployment path', () => {
+  const source = readFileSync(new URL('../scripts/deploy-academy.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /whatsapp|meta-|secretsmanager|SecretsManager/i);
+  for (const dir of ['infrastructure/events', 'services/identity-service']) {
+    assert.doesNotMatch(readFileSync(new URL(`../${dir}/serverless.yml`, import.meta.url), 'utf8'), /whatsapp|secretsmanager|webhooks\/meta/i);
   }
 });

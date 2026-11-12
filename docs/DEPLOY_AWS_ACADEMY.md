@@ -72,13 +72,14 @@ El 31 de octubre de 2026 `npm audit fix` actualizo Vite dentro de su rango compa
 
 El plugin 6.1.2 construye por defecto el nombre de imagen SAM a partir del runtime y la arquitectura (`public.ecr.aws/sam/build-python3.12:latest-x86_64` con los valores actuales). `dockerizePip` y `PyJWT[crypto]` estan declarados en los tres servicios. Esto confirma la configuracion prevista, no el contenido de los artefactos: falta empaquetar y revisar los ZIP en un entorno con Serverless autenticado y Docker.
 
-## WhatsApp Cloud API: preparacion local, envios deshabilitados
+## Canal de correo (Amazon SNS) y resiliencia Well-Architected
 
-El adaptador local `meta-whatsapp.mjs` construye solicitudes de plantilla para Graph API y valida la firma HMAC de bytes originales. **No esta conectado a las automatizaciones ni a un endpoint webhook y no habilita envios.** La verificacion del modo local es una simulacion y nunca acredita posesion real del numero. El estado actual no cumple aun el flujo de WhatsApp real.
+En AWS Academy no está disponible Amazon SES, por lo que las notificaciones por correo electrónico utilizan **Amazon SNS** (`EmailTopic`) con suscripciones filtradas por `tenantId` y `userId`. El flujo sigue el patrón Fan-Out del *AWS Well-Architected Serverless Applications Lens*:
 
-Para completar la integracion hacen falta una cuenta Meta Business, WABA, telefono remitente registrado (Phone Number ID), version Graph soportada, token con permisos `whatsapp_business_messaging`, secreto de aplicacion para firmas, verify token, plantillas aprobadas y consentimiento verificable. Todos los secretos deben obtenerse en el servidor desde un almacen apropiado; nunca se ponen en variables VITE, en el repositorio ni en archivos de despliegue. Academy puede no autorizar Secrets Manager: con permisos insuficientes el canal debe continuar deshabilitado.
-
-Antes de habilitarlo quedan pendientes una verificacion independiente de posesion, almacenamiento atomico e idempotente por tenant/usuario, limites de envio, relectura del consentimiento antes de enviar, una cola segura, webhook publico que valide firma sobre el cuerpo original, correlacion de estados por mensaje y opt-out. Una respuesta aceptada de Meta no prueba entrega. La confirmacion de un resultado ambiguo no debe reintentarse ciegamente porque podria duplicar mensajes. No se han enviado mensajes reales ni verificado estas interacciones con Meta.
+1. Los productores (`Project`, `Identity`, `Priority`, `reminderScheduler`) publican eventos en `DomainTopic` (`SNS`).
+2. `BudgetQueue` (con `BudgetDLQ`, `maxReceiveCount: 4`) y `NotificationQueue` (con `NotificationDLQ`, `maxReceiveCount: 5`) reciben únicamente los eventos que coinciden con su `FilterPolicy`, con cifrado SSE habilitado (`SqsManagedSseEnabled: true`) y retención de 14 días.
+3. Las funciones consumidoras reportan fallos parciales de lote (`ReportBatchItemFailures`), aplican idempotencia en DynamoDB y limitan su concurrencia (`maximumConcurrency: 5`).
+4. Todas las Lambdas habilitan trazas activas en **AWS X-Ray**, los HTTP APIs aplican *throttling* por ruta y `infrastructure/events` define alarmas de **CloudWatch** sobre la profundidad de ambas DLQ y la antigüedad de la cola de notificaciones hacia `OpsAlertsTopic`.
 
 ## Estado funcional actual (revisión de flujos locales)
 
@@ -89,7 +90,5 @@ Antes de habilitarlo quedan pendientes una verificacion independiente de posesio
 | Presupuestos y gastos | Formularios y APIs conectados | No implica conversión monetaria |
 | Automatizaciones | Persistencia, scheduler local y ejecución existentes | Entregas siguen simuladas; no usar modo manual como tarea programada |
 | Buzón interno | Funciona en modo local, persistido en DynamoDB | Entrega externa no demostrada |
-| WhatsApp | Endpoints, cola, consumidor y webhook implementados; circuito local probado con emuladores y proveedor simulado | AWS y Meta reales requieren despliegue, permisos, plantillas aprobadas y prueba autorizada |
+| Correo electrónico (SNS) | Endpoints, publicación SNS, cola SQS con DLQ y consumidor idempotente implementados | En AWS requiere que el usuario confirme el correo de suscripción enviado por Amazon SNS |
 | Importación | Hay generación/descarga de reportes CSV | No existe importador Excel/CSV y no se anuncia como función |
-
-Para habilitar WhatsApp real se requieren un proveedor Meta configurado, plantillas aprobadas, credenciales en Secrets Manager, permisos de LabRole y verificación autorizada. El recorrido local no prueba su funcionamiento real. Consulta [WHATSAPP_INTEGRATION.md](WHATSAPP_INTEGRATION.md).

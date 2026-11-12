@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildRecipientFlowReport, createFlowEngine, createLocalNotificationProvider, createWhatsAppBusinessProvider } from '../services/identity-service/flow-engine.mjs';
+import { buildRecipientFlowReport, createFlowEngine, createLocalNotificationProvider } from '../services/identity-service/flow-engine.mjs';
 import { nextFlowRun, dispatchDueFlows } from '../services/identity-service/flow-scheduler.mjs';
 import { authorize, claims, signLocalServiceToken, signLocalToken } from '../shared/index.mjs';
 
@@ -17,7 +17,7 @@ test('Flow reports pending Decision Lab scenarios for human review only', async 
  assert.match(result.report.explanation,/nunca se aprueban|aplican autom/i);
 });
 
-test('ADMIN and USER WhatsApp reports are individualized and expose only their authorized scope', () => {
+test('ADMIN and USER e-mail reports are individualized and expose only their authorized scope', () => {
  const source={projects:[{id:'p-admin',status:'ACTIVE'},{id:'p-user',status:'ACTIVE',ownerId:'user-b',portfolioId:'port-user'},{id:'p-other',status:'ACTIVE'}],portfolios:[{id:'port-user'},{id:'port-other'}],tasks:[{id:'t-user',projectId:'p-user',assigneeId:'user-b',dueDate:'2026-11-03',status:'OPEN'},{id:'t-other',projectId:'p-other',assigneeId:'user-c',dueDate:'2026-11-03',status:'OPEN'}],budgets:[{id:'budget-private',allocated:100,spent:90}],resources:[{id:'resource-private'}],priorities:[{id:'priority-private'}],pendingDecisionScenarios:[{id:'scenario-private',scope:{projectId:'p-admin'}}]};
  const alerts=[{kind:'TASK_OVERDUE',entityId:'t-user'},{kind:'BUDGET_THRESHOLD',entityId:'budget-private'},{kind:'PROJECT_OVERDUE',entityId:'p-other'}];
  const admin=buildRecipientFlowReport({role:'ADMIN',userId:'admin-a',source,alerts,workflowId:'flow',executionId:'admin-run',now:new Date('2026-11-01T12:00:00Z')});
@@ -37,7 +37,6 @@ test('flow engine rejects unauthorized roles and arbitrary/missing tenant contex
  await assert.rejects(execute({tenantId:'tenant-a',actor:{userId:'v',role:'ADMIN'},workflowId:'w',config:{type:'fake'}}),{status:400});
  await assert.rejects(execute({actor:{userId:'v',role:'ADMIN'},workflowId:'w',config:{type:'risk-alert'}}),{status:400});
 });
-test('WhatsApp adapter remains explicitly disabled',async()=>{await assert.rejects(createWhatsAppBusinessProvider().deliver({}),{code:'PROVIDER_DISABLED'});});
 
 test('daily and weekly schedules honor IANA timezone and weekday',()=>{
  const daily=nextFlowRun({frequency:'daily',time:'09:00',timezone:'America/Lima'},new Date('2026-05-01T13:59:00Z'));

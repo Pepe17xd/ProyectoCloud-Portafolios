@@ -26,7 +26,7 @@ while (running) {
       for (const pref of prefs.Items || []) {
         const userId = pref.sk.slice('NOTIFY#PREFERENCES#'.length);
         if (!pref.enabled || pref.frequency !== 'immediate' || !pref.alertTypes?.includes(event.eventType) || !allowedNow(pref)) continue;
-        const item = { pk: pref.pk, sk: `NOTIFY#DELIVERY#${userId}#${event.eventId}`, eventId: event.eventId, eventType: event.eventType, userId, tenantId: event.tenantId, projectId: event.payload?.projectId || event.entityId, title: event.eventType, deliveryStatus: 'SIMULATED_LOCAL', provider: 'local-mailbox', notice: 'Simulado localmente — No enviado a WhatsApp', createdAt: new Date().toISOString() };
+        const item = { pk: pref.pk, sk: `NOTIFY#DELIVERY#${userId}#${event.eventId}`, eventId: event.eventId, eventType: event.eventType, userId, tenantId: event.tenantId, projectId: event.payload?.projectId || event.entityId, title: event.eventType, deliveryStatus: 'SIMULATED_LOCAL', provider: 'local-mailbox', notice: 'Simulado localmente — Entrada del buzón interno', createdAt: new Date().toISOString() };
         try { await db.send(new PutCommand({ TableName: 'cloudportfolio-identity-local', Item: item, ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)' })); }
         catch (error) { if (error.name !== 'ConditionalCheckFailedException') throw error; }
       }

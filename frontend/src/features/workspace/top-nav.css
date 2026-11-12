@@ -155,6 +155,141 @@
   border-bottom: 1px solid var(--nav-border);
   margin-bottom: 4px;
 }
+.topbar-profile-dropdown {
+  min-width: 290px;
+  max-width: 340px;
+  padding: 12px;
+}
+.topbar-profile-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 4px 12px;
+  border-bottom: 1px solid var(--nav-border);
+}
+.topbar-profile-avatar-large {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #4f46e5, #0ea5e9);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: -.02em;
+  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.25);
+  flex-shrink: 0;
+}
+.topbar-profile-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+  flex: 1;
+}
+.topbar-profile-fullname {
+  color: var(--nav-cream);
+  font-size: 13.5px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topbar-profile-email {
+  color: var(--nav-text);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topbar-profile-meta-row {
+  margin-top: 4px;
+}
+.topbar-role-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  background: rgba(99, 102, 241, 0.16);
+  color: #818cf8;
+  border: 1px solid rgba(99, 102, 241, 0.32);
+}
+.topbar-role-badge.role-admin {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.32);
+}
+.topbar-role-badge.role-manager {
+  background: rgba(14, 165, 233, 0.16);
+  color: #38bdf8;
+  border-color: rgba(14, 165, 233, 0.32);
+}
+.topbar-role-badge.role-viewer {
+  background: rgba(148, 163, 184, 0.16);
+  color: #94a3b8;
+  border-color: rgba(148, 163, 184, 0.32);
+}
+.topbar-profile-tenant-card {
+  margin: 10px 0 6px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--nav-border);
+}
+.topbar-profile-tenant-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--nav-text);
+  margin-bottom: 4px;
+}
+.topbar-profile-tenant-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.topbar-profile-tenant-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--nav-cream);
+  background: transparent;
+}
+.topbar-copy-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  padding: 3px 8px !important;
+  font-size: 11px !important;
+  border-radius: 6px !important;
+  background: var(--nav-hover) !important;
+  color: var(--nav-sky) !important;
+  width: auto !important;
+}
+.topbar-copy-btn:hover {
+  background: rgba(14, 165, 233, 0.2) !important;
+}
+.topbar-profile-menu-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+}
+.topbar-logout-action {
+  color: #f87171 !important;
+}
+.topbar-logout-action:hover {
+  background: rgba(239, 68, 68, 0.12) !important;
+  color: #fca5a5 !important;
+}
 .topbar button:focus-visible { outline: 2px solid var(--nav-sky); outline-offset: 3px; }
 .topbar-mobile-toggle { display: none; }
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowRight, Save, Trash2 } from 'lucide-react';
+import Modal from './components/Modal';
 import { formatDate, StatusBadge } from './components/StatusBadge';
 import './DecisionLab.css';
 
@@ -44,7 +45,22 @@ export default function DecisionLab({ request }: Props) {
   async function simulate(e: React.FormEvent) { e.preventDefault(); setBusy(true); setError(''); setMessage(''); setSelected(null); try { setResult(await request('priority', 'decisions/simulate', 'POST', payload())); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }
   async function save() { if (!result || !name.trim()) return; setBusy(true); setError(''); try { const item = await request<any>('priority', 'decisions/scenarios', 'POST', { ...payload(), name: name.trim(), visibility }); setMessage('Escenario guardado como pendiente de revisión.'); setSelected(item); setName(''); await load(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }
   async function open(item: any) { setBusy(true); setError(''); try { const data = await request<any>('priority', `decisions/scenarios/${encodeURIComponent(item.id)}`); setSelected(data); setResult(data.result); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }
-  async function discard(item: any) { if (!window.confirm(`¿Descartar “${item.name}”?`)) return; setBusy(true); setError(''); try { await request('priority', `decisions/scenarios/${encodeURIComponent(item.id)}`, 'DELETE'); if (selected?.id === item.id) setSelected(null); await load(); setMessage('Escenario descartado.'); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); } }
+  const [confirmDiscard, setConfirmDiscard] = useState<any | null>(null);
+
+  async function executeDiscard(item: any) {
+    setBusy(true); setError('');
+    try {
+      await request('priority', `decisions/scenarios/${encodeURIComponent(item.id)}`, 'DELETE');
+      if (selected?.id === item.id) setSelected(null);
+      setConfirmDiscard(null);
+      await load();
+      setMessage('Escenario descartado.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
   const scopedProjects = context?.projects.filter(p => !scope.portfolioId || p.portfolioId === scope.portfolioId) || [];
   const activeResult = result?.scenarios;
 
@@ -93,6 +109,26 @@ export default function DecisionLab({ request }: Props) {
         {context?.capabilities.canSave && <div className="decision-save"><label>Nombre del escenario<input value={name} onChange={e=>setName(e.target.value)} maxLength={100} placeholder="Revisión de presupuesto Q3"/></label><label>Visibilidad<select value={visibility} onChange={e=>setVisibility(e.target.value)}><option value="private">Solo yo</option><option value="tenant">Compartido con el tenant</option></select></label><button className="secondary" disabled={busy || !name.trim()} onClick={() => void save()}><Save size={16}/>Guardar para revisión</button></div>}
       </section>
     </>}
-    <section className="panel"><div className="panelHeading"><div><h2>Escenarios guardados</h2><span>Los escenarios guardados quedan pendientes de revisión y nunca se aplican automáticamente.</span></div></div><div className="tableWrap"><table><thead><tr><th>Nombre</th><th>Alcance</th><th>Estado</th><th>Visibilidad</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>{saved.map(item=><tr key={item.id}><td><strong>{item.name}</strong></td><td>{item.scope?.projectId || item.scope?.portfolioId || 'Tenant'}</td><td><StatusBadge value={item.reviewStatus} /></td><td>{item.visibility}</td><td>{formatDate(item.createdAt)}</td><td><div className="rowActions"><button onClick={() => void open(item)}>Abrir reporte</button>{(context?.capabilities.canDeleteAll || (context?.capabilities.canDeleteOwn && item.createdBy === context.currentUserId)) && <button className="deleteAction" disabled={busy} onClick={() => void discard(item)}><Trash2 size={14}/>Descartar</button>}</div></td></tr>)}</tbody></table>{!saved.length && <div className="empty">No hay escenarios guardados.</div>}</div></section>
+    <section className="panel"><div className="panelHeading"><div><h2>Escenarios guardados</h2><span>Los escenarios guardados quedan pendientes de revisión y nunca se aplican automáticamente.</span></div></div><div className="tableWrap"><table><thead><tr><th>Nombre</th><th>Alcance</th><th>Estado</th><th>Visibilidad</th><th>Creado</th><th>Acciones</th></tr></thead><tbody>{saved.map(item=><tr key={item.id}><td><strong>{item.name}</strong></td><td>{item.scope?.projectId || item.scope?.portfolioId || 'Tenant'}</td><td><StatusBadge value={item.reviewStatus} /></td><td>{item.visibility}</td><td>{formatDate(item.createdAt)}</td><td><div className="rowActions"><button onClick={() => void open(item)}>Abrir reporte</button>{(context?.capabilities.canDeleteAll || (context?.capabilities.canDeleteOwn && item.createdBy === context.currentUserId)) && <button className="deleteAction" disabled={busy} onClick={() => setConfirmDiscard(item)}><Trash2 size={14}/>Descartar</button>}</div></td></tr>)}</tbody></table>{!saved.length && <div className="empty">No hay escenarios guardados.</div>}</div></section>
+    {confirmDiscard && (
+      <Modal
+        open={Boolean(confirmDiscard)}
+        title="Descartar escenario"
+        subtitle="Esta acción no se puede deshacer."
+        onClose={() => setConfirmDiscard(null)}
+      >
+        <div className="confirm-delete-box">
+          <p className="confirm-delete-message">
+            ¿Estás seguro de que deseas descartar el escenario <strong>"{confirmDiscard.name}"</strong>?
+          </p>
+          <div className="modal-form-actions">
+            <button type="button" className="secondary" onClick={() => setConfirmDiscard(null)}>Cancelar</button>
+            <button type="button" className="danger" disabled={busy} onClick={() => void executeDiscard(confirmDiscard)}>
+              {busy ? 'Descartando…' : 'Descartar escenario'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+    )}
   </div>;
 }

@@ -83,4 +83,3 @@ export function createFlowEngine({ monitor, persist, deliver = async () => ({ st
 }
 
 export function createLocalNotificationProvider() { return { async deliver({ idempotencyKey, report, recipient }) { return { id: idempotencyKey, recipient, status: 'SIMULATED', preview: `ProFiles tiene ${report.alerts.length} alertas para revisar. Inicia sesión para consultar el informe completo.` }; } }; }
-export function createWhatsAppBusinessProvider() { return { async deliver() { throw Object.assign(new Error('WhatsApp Business provider is disabled'), { code: 'PROVIDER_DISABLED' }); } }; }

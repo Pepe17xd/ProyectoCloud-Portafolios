@@ -26,7 +26,7 @@ async function hasProjectNotification(projectId: string) {
       ExclusiveStartKey: cursor,
       Limit: 100
     }));
-    if ((page.Items || []).some((item: any) => item.projectId === projectId && item.notice?.includes('No enviado a WhatsApp'))) return true;
+    if ((page.Items || []).some((item: any) => item.projectId === projectId && item.deliveryStatus === 'SIMULATED_LOCAL')) return true;
     cursor = page.LastEvaluatedKey;
   } while (cursor);
   return false;
@@ -192,12 +192,11 @@ test('landing, navegación pública, auth, asistente y notificaciones locales', 
 
   const prefs = await apiCall(page, `${apiIdentity}/notifications/preferences`, 'PUT', token, { enabled: true, timezone: 'America/Lima', allowedHours: { start: '00:00', end: '23:59' }, frequency: 'immediate', alertTypes: ['ProjectCreated'] });
   expect(prefs.ok()).toBeTruthy();
-  const start = await apiCall(page, `${apiIdentity}/notifications/whatsapp/verification`, 'POST', token, { phoneNumber: '+15555550123', consent: true, consentVersion: 'profiles-whatsapp-2026-01' });
+  const start = await apiCall(page, `${apiIdentity}/notifications/email/subscribe`, 'POST', token, { consent: true, consentVersion: 'profiles-email-2026-01' });
   expect(start.status()).toBe(202);
-  expect((await start.json()).message).toMatch(/no se envió a WhatsApp/i);
-  const localCode = await apiCall(page, `${apiIdentity}/notifications/verification-inbox`, 'GET', token);
-  const confirmed = await apiCall(page, `${apiIdentity}/notifications/whatsapp/confirm`, 'POST', token, { code: (await localCode.json()).code });
-  expect(confirmed.ok()).toBeTruthy();
+  expect((await start.json()).message).toMatch(/simulan|confirmación/i);
+  const emailPrefs = await apiCall(page, `${apiIdentity}/notifications/email/preferences`, 'PUT', token, { alertTypes: ['ReminderDue', 'RiskAlert'] });
+  expect(emailPrefs.ok()).toBeTruthy();
 
   const createdEventSource = await apiCall(page, `${apiProject}/projects`, 'POST', token, { name: `E2E notification ${suffix}` });
   expect(createdEventSource.status()).toBe(201);
@@ -208,7 +207,7 @@ test('landing, navegación pública, auth, asistente y notificaciones locales', 
     projectNotified = await hasProjectNotification(createdProject.id);
   }
   expect(projectNotified).toBeTruthy();
-  await apiCall(page, `${apiIdentity}/notifications/whatsapp/number`, 'DELETE', token);
+  await apiCall(page, `${apiIdentity}/notifications/email`, 'DELETE', token);
   await apiCall(page, `${apiIdentity}/notifications/preferences`, 'PUT', token, { enabled: false, timezone: 'America/Lima', allowedHours: { start: '00:00', end: '23:59' }, frequency: 'immediate', alertTypes: ['ProjectCreated'] });
 
   await page.setViewportSize({ width: 390, height: 844 });
@@ -240,7 +239,7 @@ test('project API mantiene aislamiento entre tenant A y B', async ({ page }) => 
   const tokenB = await page.evaluate(() => localStorage.getItem('cloudportfolio.accessToken'));
   const tenantBPreferences = await apiCall(page, `${apiIdentity}/notifications/preferences`, 'GET', tokenB);
   expect(tenantBPreferences.status()).toBe(200);
-  expect((await tenantBPreferences.json()).whatsappNumber).toBeUndefined();
+  expect((await tenantBPreferences.json()).emailAddress).toBeUndefined();
   const tenantBReminders = await apiCall(page, `${apiIdentity}/reminders`, 'GET', tokenB);
   expect((await tenantBReminders.json()).items.some((item: any) => item.id === reminderId)).toBeFalsy();
   const tenantBReport = await apiCall(page, `${apiProject}/intelligence/reports/${reportId}`, 'GET', tokenB);

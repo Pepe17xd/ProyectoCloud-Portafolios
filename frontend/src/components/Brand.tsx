@@ -15,7 +15,6 @@ export function BrandIcon({ large = false, mascotSrc }: BrandIconProps) {
       <path className="brand-folder-front" d="M5 16a4 4 0 0 1 4-4h22a4 4 0 0 1 4 4l-2 14a5 5 0 0 1-5 4H10a5 5 0 0 1-5-4z"/>
       <path className="brand-folder-accent" d="M17 18h6a3 3 0 0 1 0 6h-6a3 3 0 0 1 0-6z"/>
     </svg>
-    {!mascotSrc && <img className="brand-mark-image" src={BRAND_MARK_SRC} alt="" aria-hidden="true" onError={event => { event.currentTarget.hidden = true; }}/>}
     {mascotSrc && <img className="brand-mascot-image" src={mascotSrc} alt="" aria-hidden="true" onError={event => { event.currentTarget.hidden = true; }}/>}
   </span>;
 }

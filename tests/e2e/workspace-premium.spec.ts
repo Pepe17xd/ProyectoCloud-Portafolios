@@ -64,7 +64,7 @@ test('registration screen remains clear and styled on desktop and mobile', async
 });
 
 for (const [label, viewport] of [['escritorio', { width: 1440, height: 900 }], ['movil', { width: 390, height: 844 }]] as const) {
-  test(`landing, dashboard and WhatsApp states at ${label}`, async ({ page, browser }) => {
+  test(`landing, dashboard and Email states at ${label}`, async ({ page, browser }) => {
     const publicContext = await browser.newContext({ viewport });
     const publicPage = await publicContext.newPage();
     await publicPage.goto('/');
@@ -86,7 +86,7 @@ for (const [label, viewport] of [['escritorio', { width: 1440, height: 900 }], [
     await page.setViewportSize(viewport);
     await page.route('**/mock-api/identity/notifications/**', route => {
       const url = route.request().url();
-      if (url.endsWith('/whatsapp')) return route.fulfill({ json: { status:'verified-test', providerAvailable:false, whatsappNumber:'+51987654321', consent:true, alertTypes:[], items:[] } });
+      if (url.endsWith('/email')) return route.fulfill({ json: { status:'pending-confirmation', providerAvailable:true, email:'a***@demo.local', consent:true, alertTypes:[], items:[] } });
       if (url.endsWith('/inbox')) return route.fulfill({ json: { items:[] } });
       return route.fulfill({ json: { enabled:false, alertTypes:[] } });
     });
@@ -94,10 +94,9 @@ for (const [label, viewport] of [['escritorio', { width: 1440, height: 900 }], [
     await expect(page.getByRole('heading', { name:'Resumen ejecutivo' })).toBeVisible();
     await page.screenshot({ path: test.info().outputPath(`dashboard-${label}.png`), fullPage: true });
     await page.goto('/app/notifications');
-    await expect(page.getByText('Solo prueba local')).toBeVisible();
-    await expect(page.getByText('No disponible', { exact:true })).toBeVisible();
-    await expect(page.getByText('•••• 4321')).toBeVisible();
-    await expect(page.getByText('WhatsApp conectado')).toHaveCount(0);
-    await page.screenshot({ path: test.info().outputPath(`whatsapp-${label}.png`), fullPage: true });
+    await expect(page.getByText('Pendiente de confirmar')).toBeVisible();
+    await expect(page.getByText('Amazon SNS activo', { exact:true })).toBeVisible();
+    await expect(page.getByText('a***@demo.local')).toBeVisible();
+    await page.screenshot({ path: test.info().outputPath(`email-${label}.png`), fullPage: true });
   });
 }

@@ -1,15 +1,16 @@
 ﻿import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createProvisioner } from '../services/identity-service/provisioning.mjs';
+import { createProvisioner, createOrganizationJoiner } from '../services/identity-service/provisioning.mjs';
 import { readFileSync } from 'node:fs';
 function setup() {
   const records = new Map(), users = new Map(); let failUpdate = false, failTransaction = false, writes = 0;
   const key = x => `${x.pk}|${x.sk}`;
-  const db = { async send(cmd) { if (cmd.constructor.name === 'GetCommand') return { Item: records.get(key(cmd.input.Key)) }; if (cmd.constructor.name === 'TransactWriteCommand') { if (failTransaction) throw Error('database unavailable'); const items = cmd.input.TransactItems.map(x => x.Put.Item); if (items.some(x => records.has(key(x)))) throw Object.assign(Error('duplicate'), { name: 'TransactionCanceledException' }); for (const item of items) records.set(key(item), item); writes++; return {}; } throw Error('unexpected command'); } };
+  const db = { async send(cmd) { if (cmd.constructor.name === 'GetCommand') return { Item: records.get(key(cmd.input.Key)) }; if (cmd.constructor.name === 'QueryCommand') { const pk = cmd.input.ExpressionAttributeValues[':pk']; return { Items: [...records.values()].filter(x => x.pk === pk) }; } if (cmd.constructor.name === 'TransactWriteCommand') { if (failTransaction) throw Error('database unavailable'); const items = cmd.input.TransactItems.map(x => x.Put.Item); if (items.some(x => records.has(key(x)))) throw Object.assign(Error('duplicate'), { name: 'TransactionCanceledException' }); for (const item of items) records.set(key(item), item); writes++; return {}; } throw Error('unexpected command'); } };
   const cognito = { async send(cmd) { const user = users.get(cmd.input.Username); if (cmd.constructor.name === 'AdminGetUserCommand') return { UserAttributes: Object.entries(user).map(([Name,Value]) => ({ Name, Value })) }; if (failUpdate) { failUpdate = false; throw Error('temporary'); } for (const a of cmd.input.UserAttributes) user[a.Name] = a.Value; return {}; } };
   const provision = createProvisioner({ db, cognito, table: 'identity', poolId: 'pool' });
+  const joinOrganization = createOrganizationJoiner({ db, cognito, table: 'identity', poolId: 'pool' });
   const add = sub => { users.set(sub, { sub, name: 'Test User', email: `${sub}@example.test`, email_verified: 'true' }); return { sub, 'cognito:username': sub, token_use: 'id', email_verified: 'true' }; };
-  return { provision, add, records, users, writes: () => writes, failUpdate: () => { failUpdate = true; }, failTransaction: () => { failTransaction = true; } };
+  return { provision, joinOrganization, add, records, users, writes: () => writes, failUpdate: () => { failUpdate = true; }, failTransaction: () => { failTransaction = true; } };
 }
 test('verified registration creates a single tenant, ADMIN profile and membership', async () => {
   const f = setup(), c = f.add('user-a'); await f.provision(c, { organizationName: 'Org A' }); await f.provision(c, { organizationName: 'Org A' });
@@ -46,6 +47,18 @@ test('deployment protects endpoint and Cognito sensitive attributes', () => {
 test('frontend registration uses confirmation, refresh and only the organization name', () => {
   const page = readFileSync(new URL('../frontend/src/features/auth/AuthPage.tsx', import.meta.url), 'utf8');
   const client = readFileSync(new URL('../frontend/src/auth/cognito.ts', import.meta.url), 'utf8');
-  assert.match(page, /await registerCognito\(/); assert.match(page, /confirm: confirmCognito/); assert.match(page, /await resendCognito\(/); assert.match(page, /provision: provisionCognito/);
+  assert.match(page, /await registerCognito\(/); assert.match(page, /confirm: confirmCognito/); assert.match(page, /await resendCognito\(/); assert.match(page, /provision: isJoin \? joinCognitoOrganization : provisionCognito/);
   assert.match(client, /JSON\.stringify\(\{ organizationName \}\)/); assert.match(client, /forceRefresh: true/); assert.doesNotMatch(client, /custom:role.*userAttributes/);
+});
+test('joining an existing organization via invite code links member to the same tenant without ADMIN escalation', async () => {
+  const f = setup(), founder = f.add('founder-1'), member = f.add('member-2');
+  await f.provision(founder, { organizationName: 'Shared Org' });
+  const tenantId = f.users.get('founder-1')['custom:tenantId'];
+  await assert.rejects(f.joinOrganization(member, { inviteCode: tenantId, role: 'ADMIN' }));
+  await assert.rejects(f.joinOrganization(member, { inviteCode: 'tenant-nonexistent' }));
+  const joined = await f.joinOrganization(member, { inviteCode: tenantId });
+  assert.equal(joined.tenantId, tenantId);
+  assert.equal(joined.role, 'MANAGER');
+  assert.equal(f.users.get('member-2')['custom:tenantId'], tenantId);
+  assert.equal(f.users.get('member-2')['custom:role'], 'MANAGER');
 });

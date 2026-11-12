@@ -12,6 +12,8 @@ package:
 provider:
   name: aws
   runtime: python3.12
+  tracing:
+    lambda: true
   region: ${opt:region, 'us-east-1'}
   stage: ${opt:stage, 'dev'}
   environment:
@@ -56,8 +58,15 @@ functions:
     handler: app.consume
     timeout: 30
     events:
-      - sqs: {arn: "${env:BUDGET_QUEUE_ARN, 'arn:aws:sqs:us-east-1:000000000000:placeholder'}", batchSize: 5, functionResponseType: ReportBatchItemFailures}
+      - sqs: {arn: "${env:BUDGET_QUEUE_ARN, 'arn:aws:sqs:us-east-1:000000000000:placeholder'}", batchSize: 5, maximumConcurrency: 5, functionResponseType: ReportBatchItemFailures}
 resources:
+  # Well-Architected REL 1: throttle every route to protect the domain Lambda and its table.
+  extensions:
+    HttpApiStage:
+      Properties:
+        DefaultRouteSettings:
+          ThrottlingBurstLimit: 100
+          ThrottlingRateLimit: 50
   Resources:
     RecordsTable:
       Type: AWS::DynamoDB::Table

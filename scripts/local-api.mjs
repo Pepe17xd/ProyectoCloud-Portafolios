@@ -23,7 +23,6 @@ if (!process.env.LOCAL_JWT_SECRET) throw new Error('LOCAL_JWT_SECRET must be gen
 process.env.DYNAMODB_ENDPOINT ||= 'http://127.0.0.1:8000';
 process.env.SNS_ENDPOINT ||= 'http://127.0.0.1:4566';
 process.env.SQS_ENDPOINT ||= 'http://127.0.0.1:4566';
-if (service === 'identity') process.env.WHATSAPP_QUEUE_URL ||= 'http://127.0.0.1:4566/000000000000/cloudportfolio-whatsapp-local';
 process.env.S3_ENDPOINT ||= 'http://localhost:4566';
 process.env.TOPIC_ARN ||= 'arn:aws:sns:us-east-1:000000000000:cloudportfolio-domain-local';
 process.env.DOCUMENTS_BUCKET ||= 'cloudportfolio-documents-local';

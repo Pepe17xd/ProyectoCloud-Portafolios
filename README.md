@@ -7,7 +7,7 @@ ProFiles es una aplicación SaaS para organizar portafolios, proyectos, tareas, 
 - Portafolios, proyectos, tablero de tareas, recursos, asignaciones, presupuestos y gastos.
 - Dashboard con información obtenida de las APIs, reportes y reglas deterministas de seguimiento.
 - Registro y acceso local o mediante Cognito; el backend aprovisiona la organización y la membresía inicial.
-- Buzón interno y canal WhatsApp opcional con consentimiento, verificación, cola y webhook. La integración local usa un proveedor simulado; una cuenta Meta configurada y pruebas autorizadas son necesarias para envíos reales.
+- Buzón interno y canal de correo electrónico vía Amazon SNS con consentimiento, suscripción filtrada por organización/usuario, cola SQS y Dead Letter Queue (DLQ). En entorno local los correos se simulan y no salen del equipo.
 
 ## Arquitectura
 
@@ -47,20 +47,19 @@ npm run deploy:academy
 
 El comando obtiene IDs y URLs de los recursos durante el despliegue. Los permisos y límites varían entre laboratorios; el empaquetado completo y el despliegue en un laboratorio nuevo requieren verificación real. La carga masiva es independiente y opcional.
 
-## WhatsApp
+## Notificaciones por correo (Amazon SNS)
 
-El canal es opcional y permanece deshabilitado sin configuración de proveedor y plantillas. Los secretos de Meta son exclusivamente del servidor. La [guía de integración](docs/WHATSAPP_INTEGRATION.md) describe consentimiento, verificación, webhook, cola, configuración y pruebas locales. La aceptación de una petición por Meta no demuestra entrega; la entrega real y el despliegue AWS no están verificados por las pruebas simuladas.
+El canal de correo utiliza suscripciones de email en Amazon SNS (`NOTIFICATION_MODE=sns-email` en AWS, `local` en desarrollo local y `disabled` para solo buzón interno). Cada usuario activa su suscripción desde el panel de Notificaciones y confirma el correo enviado por Amazon SNS; la política de filtro (`FilterPolicy`) restringe la entrega por `tenantId` y `userId`. Todos los eventos de dominio y recordatorios se publican en el `SNS Domain Topic`, se encolan en `SQS Notifications` (con `NotificationDLQ` tras 5 reintentos) y son procesados de forma idempotente por `notificationConsumer`.
 
 ## Pruebas
 
 ```bash
 npm test
 npm run build --workspace frontend
-npm run test:whatsapp:integration
 npm run test:e2e
 ```
 
-La integración WhatsApp requiere Docker, DynamoDB Local y LocalStack; ejecuta un servidor Meta simulado y no envía mensajes reales. Las pruebas de navegador requieren los servicios locales o un entorno controlado, según la prueba. Consulta `playwright.config.ts` y las guías locales.
+Las pruebas de navegador requieren los servicios locales o un entorno controlado, según la prueba. Consulta `playwright.config.ts` y las guías locales.
 
 ## Limitaciones
 

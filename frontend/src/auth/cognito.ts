@@ -66,6 +66,19 @@ export async function cognitoHasOrganization(forceRefresh = false) {
   return Boolean(payload?.['custom:tenantId'] && payload?.['custom:role']);
 }
 
+export async function getCognitoOrganizationInfo() {
+  await configureCognito();
+  const { fetchAuthSession } = await import('@aws-amplify/auth');
+  const session = await fetchAuthSession();
+  const payload = session.tokens?.idToken?.payload;
+  return {
+    tenantId: String(payload?.['custom:tenantId'] || ''),
+    role: String(payload?.['custom:role'] || ''),
+    email: String(payload?.email || ''),
+    name: String(payload?.name || ''),
+  };
+}
+
 export async function provisionCognito(organizationName: string) {
   const token = await getCognitoIdToken();
   const base = env.VITE_API_IDENTITY;
@@ -86,6 +99,29 @@ export async function provisionCognito(organizationName: string) {
     if (response.status === 409) throw Error('Esta cuenta ya tiene una organización asociada. Inicia sesión para continuar.');
     if (response.status === 403) throw Error('No pudimos verificar que esta cuenta pueda crear la organización. Contacta al equipo administrador.');
     throw Error('Tuvimos un problema temporal al preparar la organización. Puedes reintentar sin crear otra cuenta.');
+  }
+}
+
+export async function joinCognitoOrganization(inviteCode: string, role = 'MANAGER') {
+  const token = await getCognitoIdToken();
+  const base = env.VITE_API_IDENTITY;
+  if (!token || !base) throw Error('Tu sesión no está activa. Inicia sesión para continuar.');
+  let response: Response;
+  try {
+    response = await fetch(`${base.replace(/\/$/, '')}/auth/join`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inviteCode: inviteCode.trim(), role }),
+    });
+  } catch {
+    throw Error('No pudimos conectar con el servicio de registro. Comprueba tu conexión y vuelve a intentarlo.');
+  }
+  if (!response.ok) {
+    if (response.status === 401) throw Error('Tu sesión venció. Inicia sesión nuevamente y reintenta.');
+    if (response.status === 404) throw Error('No encontramos una organización activa con ese código de invitación.');
+    if (response.status === 400) throw Error('Revisa el código de organización (ej. tenant-...) e inténtalo de nuevo.');
+    if (response.status === 409) throw Error('Esta cuenta ya pertenece a una organización. Inicia sesión para continuar.');
+    throw Error('Tuvimos un problema temporal al unirte a la organización. Puedes reintentar sin crear otra cuenta.');
   }
 }
 
