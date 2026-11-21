@@ -5,16 +5,18 @@ type ModalProps = {
   open: boolean;
   title: string;
   subtitle?: string;
+  wide?: boolean;
   onClose: () => void;
   children: React.ReactNode;
 };
 
-export default function Modal({ open, title, subtitle, onClose, children }: ModalProps) {
+export default function Modal({ open, title, subtitle, wide = false, onClose, children }: ModalProps) {
   useEffect(() => {
     if (!open) return;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
       if (event.key === 'Escape') {
         onClose();
       }
@@ -37,7 +39,7 @@ export default function Modal({ open, title, subtitle, onClose, children }: Moda
       }}
     >
       <section
-        className="panel editor-panel modal-dialog"
+        className={`panel editor-panel modal-dialog ${wide ? 'modal-dialog-wide' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-dialog-title"

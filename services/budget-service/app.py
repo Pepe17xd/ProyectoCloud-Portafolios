@@ -159,6 +159,7 @@ def query_all_expenses(tenant: str, budget_id: str):
             "KeyConditionExpression": "pk = :pk",
             "FilterExpression": "entityType = :type AND budgetId = :budgetId",
             "ExpressionAttributeValues": {":pk": f"TENANT#{tenant}", ":type": "Expense", ":budgetId": budget_id},
+            "ConsistentRead": True,
         }
         if cursor:
             args["ExclusiveStartKey"] = cursor
@@ -280,7 +281,7 @@ def expense(b: ExpenseIn, authorization: str | None = Header(None), a=Depends(ac
     if b.idempotencyKey:
         previous = table.get_item(Key=expense_key).get("Item")
         if previous:
-            if all(previous.get(k) == getattr(b, k) for k in ("budgetId", "projectId", "amount", "description", "currency")):
+            if all(dynamo_safe(previous.get(k)) == dynamo_safe(getattr(b, k)) for k in ("budgetId", "projectId", "amount", "description", "currency")):
                 return previous
             raise HTTPException(409, "Idempotency key was already used for a different expense")
     item = {
@@ -291,38 +292,36 @@ def expense(b: ExpenseIn, authorization: str | None = Header(None), a=Depends(ac
         "createdBy": a["userId"],
         "createdAt": now(),
     }
-    from boto3.dynamodb.types import TypeSerializer
-
-    serializer = TypeSerializer()
-    serialize = lambda value: {k: serializer.serialize(v) for k, v in value.items()}
     transaction = [
-            {
-                "Put": {
-                    "TableName": table.name,
-                    "Item": serialize(dynamo_safe(item)),
-                    "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)",
-                }
-            },
-            {
-                "Update": {
-                    "TableName": table.name,
-                    "Key": serialize(key(a["tenantId"], b.budgetId)),
-                    "UpdateExpression": "SET #spent = if_not_exists(#spent, :zero) + :amount, #balance = if_not_exists(#balance, #allocated) - :amount, #updatedAt = :updatedAt",
-                    "ConditionExpression": "attribute_exists(pk) AND #entityType = :budget",
-                    "ExpressionAttributeNames": {"#spent": "spent", "#balance": "balance", "#allocated": "allocated", "#updatedAt": "updatedAt", "#entityType": "entityType"},
-                    "ExpressionAttributeValues": serialize({":zero": Decimal(0), ":amount": Decimal(str(b.amount)), ":updatedAt": now(), ":budget": "Budget"}),
-                }
-            },
-        ]
+        {
+            "Put": {
+                "TableName": table.name,
+                "Item": dynamo_safe(item),
+                "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)",
+            }
+        },
+        {
+            "Update": {
+                "TableName": table.name,
+                "Key": key(a["tenantId"], b.budgetId),
+                "UpdateExpression": "SET #spent = if_not_exists(#spent, :zero) + :amount, #balance = if_not_exists(#balance, #allocated) - :amount, #updatedAt = :updatedAt",
+                "ConditionExpression": "attribute_exists(pk) AND #entityType = :budget",
+                "ExpressionAttributeNames": {"#spent": "spent", "#balance": "balance", "#allocated": "allocated", "#updatedAt": "updatedAt", "#entityType": "entityType"},
+                "ExpressionAttributeValues": {":zero": Decimal(0), ":amount": Decimal(str(b.amount)), ":updatedAt": now(), ":budget": "Budget"},
+            }
+        },
+    ]
     try:
         table.meta.client.transact_write_items(TransactItems=transaction)
     except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "TransactionCanceledException" and b.idempotencyKey:
+        code = exc.response.get("Error", {}).get("Code")
+        if code == "TransactionCanceledException" and b.idempotencyKey:
             previous = table.get_item(Key=expense_key).get("Item")
-            if previous and all(previous.get(k) == getattr(b, k) for k in ("budgetId", "projectId", "amount", "description", "currency")):
+            if previous and all(dynamo_safe(previous.get(k)) == dynamo_safe(getattr(b, k)) for k in ("budgetId", "projectId", "amount", "description", "currency")):
                 return previous
             if previous:
                 raise HTTPException(409, "Idempotency key was already used for a different expense") from exc
+        logger.error("Expense DynamoDB transaction failed (%s): %s", code, exc)
         raise
     updated_budget = get(a["tenantId"], b.budgetId) or d
     threshold = float(os.getenv("BUDGET_ALERT_THRESHOLD", "0.9"))

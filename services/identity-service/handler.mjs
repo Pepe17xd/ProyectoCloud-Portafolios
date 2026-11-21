@@ -27,7 +27,18 @@ const flowEngine = createFlowEngine({
   monitor: async ({ tenantId, actor, config, event }) => {
     const token = event?.headers?.authorization || event?.headers?.Authorization;
     const get = async (base, path) => { if (!base) return []; const response = await fetch(`${base.replace(/\/$/, '')}/${path}`, { headers: { authorization: token } }); if (!response.ok) throw new Error(`Domain API unavailable (${response.status})`); const data = await response.json(); return data.items || []; };
-    const [projects,portfolios,budgets,resources,priorities,pendingDecisionScenarios] = await Promise.all([get(process.env.PROJECT_API_URL,'projects'),get(process.env.PORTFOLIO_API_URL,'portfolios'),get(process.env.BUDGET_API_URL,'budgets'),get(process.env.RESOURCE_API_URL,'resources'),get(process.env.PRIORITY_API_URL,'priorities'),get(process.env.PRIORITY_API_URL,'decisions/scenarios?reviewStatus=PENDING_REVIEW')]);
+    const [projects, portfolios] = await Promise.all([
+      get(process.env.PROJECT_API_URL, 'projects'),
+      get(process.env.PORTFOLIO_API_URL, 'portfolios'),
+    ]);
+    const [budgets, resources] = await Promise.all([
+      get(process.env.BUDGET_API_URL, 'budgets'),
+      get(process.env.RESOURCE_API_URL, 'resources'),
+    ]);
+    const [priorities, pendingDecisionScenarios] = await Promise.all([
+      get(process.env.PRIORITY_API_URL, 'priorities'),
+      get(process.env.PRIORITY_API_URL, 'decisions/scenarios?reviewStatus=PENDING_REVIEW'),
+    ]);
     const tasks = [];
     for (const project of projects.filter(p => p.status === 'ACTIVE')) { const id = project.id || project.projectId; if (id) tasks.push(...await get(process.env.PROJECT_API_URL,`projects/${encodeURIComponent(id)}/tasks`)); }
     return { tenantId, fetchedAt: new Date().toISOString(), projects, portfolios, budgets, resources, priorities, pendingDecisionScenarios, tasks };

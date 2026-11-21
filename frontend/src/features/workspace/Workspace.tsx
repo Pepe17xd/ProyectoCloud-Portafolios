@@ -1,10 +1,15 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, ArrowRight, ArrowUpDown, BarChart3, BriefcaseBusiness, CalendarDays, Check, Copy, FileBarChart, FolderKanban, Layers, Plus, ReceiptText, RefreshCw, Search, Sparkles, Target, UserPlus, Users, Wallet, Workflow, X } from 'lucide-react';
+import { Activity, ArrowRight, ArrowUpDown, BarChart3, BriefcaseBusiness, CalendarDays, FileBarChart, Flag, FolderKanban, Layers, Pencil, PieChart, Plus, ReceiptText, RefreshCw, Search, Sparkles, Target, Trash2, UserPlus, Users, Wallet, Workflow, X } from 'lucide-react';
 import { localAuth, request } from '../../api/client';
 import { getCurrentCognitoUser, getCognitoOrganizationInfo, signOutFromCognito } from '../../auth/cognito';
 import TopNav from './TopNav';
+import CustomSelect from '../../components/CustomSelect';
 import PageHeader from '../../components/PageHeader';
 import Modal from '../../components/Modal';
+import { BudgetSummaryModal, PortfolioObjectivesModal, ProjectMilestonesModal, TaskDetailModal } from './DomainModals';
+import OrbitalPanel from './OrbitalPanel';
+import TeamAvailabilityPanel from './TeamAvailabilityPanel';
+import { MembershipsPanel, OrganizationProfileBanner } from './OrganizationAdminPanels';
 import { formatCurrency, formatDate, isDateOverdue, StatusBadge, UserAvatar } from '../../components/StatusBadge';
 import {
   formatAlertEventLabel,
@@ -160,27 +165,6 @@ function renderFormattedCell(field: string, row: Item, entityNames: Record<strin
   return readable(val);
 }
 
-function CopyIdBadge({ id, full = false }: { id: string; full?: boolean }) {
-  const [copied, setCopied] = useState(false);
-  if (!id) return <span className="muted-cell">—</span>;
-  const short = full ? id : id.slice(0, 12);
-  return (
-    <button
-      type="button"
-      className="copy-id-btn"
-      title={`Copiar ID: ${id}`}
-      onClick={() => {
-        void navigator.clipboard?.writeText(id);
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1400);
-      }}
-    >
-      <span>{short}</span>
-      {copied ? <Check size={12} /> : <Copy size={12} />}
-    </button>
-  );
-}
-
 const PAGE_SIZE = 10;
 
 function PaginationBar({
@@ -280,23 +264,43 @@ function NotificationCenter() {
   return <section className="panel notification-panel"><div className="panelHeading"><div><h2>Notificaciones</h2><span>El buzón interno sigue disponible de forma independiente al correo electrónico.</span></div><span className="mode-chip">{emailChannel.providerAvailable?(statusLabels[emailChannel.status]||emailChannel.status):'Correo no disponible'}</span></div><form className="notification-form" onSubmit={save}><label className="check-label"><input type="checkbox" checked={Boolean(prefs.enabled)} onChange={e=>setPrefs({...prefs,enabled:e.target.checked})}/> Activar alertas en el buzón interno</label><div className="notification-options"><label>Zona horaria<input value={prefs.timezone||'America/Lima'} onChange={e=>setPrefs({...prefs,timezone:e.target.value})}/></label><label>Horario desde<input type="time" value={prefs.allowedHours?.start||'08:00'} onChange={e=>setPrefs({...prefs,allowedHours:{...prefs.allowedHours,start:e.target.value}})}/></label><label>Hasta<input type="time" value={prefs.allowedHours?.end||'18:00'} onChange={e=>setPrefs({...prefs,allowedHours:{...prefs.allowedHours,end:e.target.value}})}/></label></div><fieldset><legend>Eventos para el buzón interno</legend><div className="notification-types">{types.map(type=><label className="check-label" key={type}><input type="checkbox" checked={(prefs.alertTypes||[]).includes(type)} onChange={e=>setPrefs({...prefs,alertTypes:e.target.checked?[...new Set([...(prefs.alertTypes||[]),type])]:prefs.alertTypes.filter((x:string)=>x!==type)})}/>{formatAlertEventLabel(type)}</label>)}</div></fieldset><button className="secondary" disabled={busy}>Guardar preferencias</button></form><div className="notification-email"><div className="email-intro"><span className="email-label">NOTIFICACIONES POR CORREO</span><h3>Recibe recordatorios y alertas por correo electrónico</h3><p>Elige qué avisos quieres recibir en el correo de tu perfil y mantén el control de tu suscripción.</p></div><div className="email-status-grid" aria-label="Estado del canal de correo"><div><span>Disponibilidad</span><strong>{emailChannel.providerAvailable ? 'Disponible' : 'No disponible'}</strong></div><div><span>Consentimiento</span><strong>{emailChannel.consent ? 'Aceptado' : 'No otorgado'}</strong></div><div><span>Suscripción</span><strong>{emailChannel.status === 'active' ? 'Confirmada' : emailChannel.status === 'pending-confirmation' ? 'Pendiente de confirmar' : 'Sin activar'}</strong></div><div><span>Correo destino</span><strong>{emailChannel.email || 'Correo de tu cuenta'}</strong></div></div><p>{emailChannel.providerAvailable?'Al activarlo, te enviaremos un correo de confirmación a tu dirección registrada.':'Este canal requiere activar las notificaciones por correo. El buzón interno funciona de forma independiente.'}</p>{!emailChannel.providerAvailable?<p role="status">El canal de correo todavía no está disponible. Puedes seguir usando las notificaciones internas.</p>:<><form className="notification-form" onSubmit={saveEmailPreferences}><div className="notification-options"><label className="check-label"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)} disabled={['active','pending-confirmation'].includes(emailChannel.status)}/> Acepto recibir recordatorios y alertas por correo electrónico. Puedo cancelar la suscripción cuando quiera.</label></div>{!['active','pending-confirmation'].includes(emailChannel.status)&&<button className="secondary" type="button" disabled={busy||!consent} onClick={()=>void subscribeEmail()}>Activar notificaciones por correo</button>}{emailChannel.status==='pending-confirmation'&&<p role="status">Revisa tu bandeja de entrada y confirma la suscripción desde el enlace del correo recibido.</p>}{['active','pending-confirmation'].includes(emailChannel.status)&&<><fieldset><legend>Qué correos quieres recibir</legend><div className="notification-types">{emailTypes.map(type=><label className="check-label" key={type}><input type="checkbox" checked={(emailChannel.alertTypes||[]).includes(type)} onChange={e=>setEmailChannel({...emailChannel,alertTypes:e.target.checked?[...new Set([...(emailChannel.alertTypes||[]),type])]:emailChannel.alertTypes.filter((x:string)=>x!==type)})}/>{emailLabels[type]}</label>)}</div></fieldset><button className="secondary" disabled={busy}>Guardar tipos de correo</button></>}</form>{['active','pending-confirmation'].includes(emailChannel.status)&&<button className="textButton" disabled={busy} onClick={()=>void revokeEmail()}>Cancelar suscripción de correo</button>}</>}{message&&<p className="assistant-state" role="status">{message}</p>}<div className="notification-inbox"><h3>Últimos envíos por correo</h3>{emailChannel.items?.length?emailChannel.items.map((item:any)=><article key={item.eventId||item.id}><b>{item.title||formatAlertEventLabel(item.eventType)}</b><span>{deliveryLabels[item.deliveryStatus]||item.deliveryStatus}</span></article>):<p>Aún no hay mensajes enviados por este canal.</p>}</div></div><div className="notification-inbox"><h3>Buzón interno</h3>{inbox.length?inbox.slice(0,8).map((item:any)=><article key={item.eventId}><b>{item.title}</b><span>{formatDate(item.createdAt)}</span></article>):<p>No hay notificaciones para esta cuenta.</p>}</div></section>;
 }
 
+const FLOW_TYPE_OPTIONS = [
+  { value: 'weekly-summary', label: 'Resumen semanal' },
+  { value: 'reminder', label: 'Recordatorios' },
+  { value: 'risk-alert', label: 'Alertas de riesgo' },
+];
+const FLOW_FREQUENCY_OPTIONS = [
+  { value: 'weekly', label: 'Semanal' },
+  { value: 'daily', label: 'Diaria' },
+];
+const FLOW_DAY_OPTIONS = [
+  { value: '0', label: 'Domingo' },
+  { value: '1', label: 'Lunes' },
+  { value: '2', label: 'Martes' },
+  { value: '3', label: 'Miércoles' },
+  { value: '4', label: 'Jueves' },
+  { value: '5', label: 'Viernes' },
+  { value: '6', label: 'Sábado' },
+];
+
 function FlowPanel() {
   const [flows,setFlows]=useState<any[]>([]);const [runs,setRuns]=useState<any[]>([]);const [message,setMessage]=useState('');const [busy,setBusy]=useState(false);const [type,setType]=useState('weekly-summary');const [frequency,setFrequency]=useState('weekly');const [time,setTime]=useState('09:00');const [dayOfWeek,setDayOfWeek]=useState(1);
   const load=useCallback(async()=>{const data=await request<any>('identity','flows');setFlows(data.items||[]);},[]);useEffect(()=>{void load().catch(e=>setMessage(String(e)));},[load]);
   async function create(e:React.FormEvent){e.preventDefault();setBusy(true);try{await request('identity','flows','POST',{type,frequency,time,dayOfWeek,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Lima'});await load();setMessage('Automatización guardada.');}catch(e){setMessage(String(e));}finally{setBusy(false);}}
   async function run(flow:any){setBusy(true);try{await request<any>('identity',`flows/${flow.id}/run`,'POST',{});const history=await request<any>('identity',`flows/${flow.id}/runs`);setRuns(history.items||[]);setMessage('Ejecución completada.');await load();}catch(e){setMessage(String(e));}finally{setBusy(false);}}
   async function toggle(flow:any){setBusy(true);try{await request('identity',`flows/${flow.id}`,'PATCH',{enabled:!flow.enabled});await load();}catch(e){setMessage(String(e));}finally{setBusy(false);}}
-  return <section className="panel flow-panel"><div className="panelHeading"><div><h2>Automatizaciones</h2><span>Programa resúmenes y recordatorios automáticos para tu organización.</span></div><span className="mode-chip">SEGUIMIENTO PROGRAMADO</span></div><form className="assistant-form" onSubmit={create}><label className="sr-only" htmlFor="flow-type">Tipo de automatización</label><select id="flow-type" value={type} onChange={e=>setType(e.target.value)}><option value="weekly-summary">Resumen semanal</option><option value="reminder">Recordatorios</option><option value="risk-alert">Alertas de riesgo</option></select><label className="sr-only" htmlFor="flow-frequency">Cuando repetir</label><select id="flow-frequency" value={frequency} onChange={e=>setFrequency(e.target.value)}><option value="weekly">Semanal</option><option value="daily">Diaria</option></select><label className="sr-only" htmlFor="flow-time">Hora local</label><input id="flow-time" type="time" value={time} onChange={e=>setTime(e.target.value)} disabled={frequency==="manual"}/>{frequency==="weekly"&&<><label className="sr-only" htmlFor="flow-day">Día semanal</label><select id="flow-day" value={dayOfWeek} onChange={e=>setDayOfWeek(Number(e.target.value))}><option value={0}>Domingo</option><option value={1}>Lunes</option><option value={2}>Martes</option><option value={3}>Miércoles</option><option value={4}>Jueves</option><option value={5}>Viernes</option><option value={6}>Sábado</option></select></>}<button className="primary" disabled={busy}>{busy?'Guardando…':'Crear automatización'}</button></form>{message&&<p role="status" className="assistant-state">{message}</p>}<div className="orbital-reminder-list">{flows.length?flows.map(flow=><article key={flow.id}><div><b>{flow.name}</b><span>{formatFlowType(flow.type)} · {formatFlowFrequency(flow.frequency)} · {flow.enabled?'Activa':'Pausada'} · próxima {flow.nextRunAt?formatDate(flow.nextRunAt):'manual'} · última {flow.lastRunAt?formatDate(flow.lastRunAt):'—'}</span></div><button className="textButton" disabled={busy} onClick={()=>void run(flow)}>Ejecutar ahora</button><button className="textButton" disabled={busy} onClick={()=>void toggle(flow)}>{flow.enabled?'Pausar':'Activar'}</button><button className="textButton" disabled={busy} onClick={async()=>{const d=await request<any>('identity',`flows/${flow.id}/runs`);setRuns(d.items||[]);}}>Historial</button></article>):<p>No hay automatizaciones configuradas.</p>}</div>{runs.map(run=><details key={run.executionId}><summary><StatusBadge value={run.status} /> <span>{formatDate(run.createdAt)}</span></summary><pre>{JSON.stringify(run.report||run.errors||{},null,2)}</pre></details>)}</section>;
+  return <section className="panel flow-panel"><div className="panelHeading"><div><h2>Automatizaciones</h2><span>Programa resúmenes y recordatorios automáticos para tu organización.</span></div><span className="mode-chip">SEGUIMIENTO PROGRAMADO</span></div><form className="assistant-form" onSubmit={create}><CustomSelect id="flow-type" value={type} onChange={setType} options={FLOW_TYPE_OPTIONS} ariaLabel="Tipo de automatización" /><CustomSelect id="flow-frequency" value={frequency} onChange={setFrequency} options={FLOW_FREQUENCY_OPTIONS} ariaLabel="Cuando repetir" /><label className="sr-only" htmlFor="flow-time">Hora local</label><input id="flow-time" type="time" value={time} onChange={e=>setTime(e.target.value)} disabled={frequency==="manual"}/>{frequency==="weekly"&&<CustomSelect id="flow-day" value={String(dayOfWeek)} onChange={val=>setDayOfWeek(Number(val))} options={FLOW_DAY_OPTIONS} ariaLabel="Día semanal" />}<button className="primary" disabled={busy}>{busy?'Guardando…':'Crear automatización'}</button></form>{message&&<p role="status" className="assistant-state">{message}</p>}<div className="orbital-reminder-list">{flows.length?flows.map(flow=><article key={flow.id}><div><b>{flow.name}</b><span>{formatFlowType(flow.type)} · {formatFlowFrequency(flow.frequency)} · {flow.enabled?'Activa':'Pausada'} · próxima {flow.nextRunAt?formatDate(flow.nextRunAt):'manual'} · última {flow.lastRunAt?formatDate(flow.lastRunAt):'—'}</span></div><button className="textButton" disabled={busy} onClick={()=>void run(flow)}>Ejecutar ahora</button><button className="textButton" disabled={busy} onClick={()=>void toggle(flow)}>{flow.enabled?'Pausar':'Activar'}</button><button className="textButton" disabled={busy} onClick={async()=>{const d=await request<any>('identity',`flows/${flow.id}/runs`);setRuns(d.items||[]);}}>Historial</button></article>):<p>No hay automatizaciones configuradas.</p>}</div>{runs.map(run=><details key={run.executionId}><summary><StatusBadge value={run.status} /> <span>{formatDate(run.createdAt)}</span></summary><pre>{JSON.stringify(run.report||run.errors||{},null,2)}</pre></details>)}</section>;
 }
 
 function ReportsPanel() {
   const [type, setType] = useState('project-progress'); const [reports, setReports] = useState<any[]>([]); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
   const types: Record<string,string> = {'portfolio-status':'Estado de portafolios','project-progress':'Avance de proyectos','overdue-tasks':'Tareas vencidas','resource-usage':'Uso de recursos','budgets':'Presupuestos','priorities':'Prioridades','risks':'Riesgos'};
+  const reportOptions = Object.entries(types).map(([value, label]) => ({ value, label }));
   const load = useCallback(async()=>{const data=await request<any>('project','intelligence/reports');setReports(data.items||[]);},[]);
   useEffect(()=>{void load().catch(e=>setMessage(e instanceof Error?e.message:String(e)));},[load]);
   async function download(id:string) { const data=await request<any>('project',`intelligence/reports/${encodeURIComponent(id)}`); const report=data.report; const blob=new Blob([report.csv],{type:report.mediaType}); const url=URL.createObjectURL(blob); const link=document.createElement('a');link.href=url;link.download=report.fileName;link.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000); }
   async function generate(e:React.FormEvent){e.preventDefault();setBusy(true);setMessage('');try{const data=await request<any>('project','intelligence/reports','POST',{type});setMessage(`${data.report.rows.length} filas generadas.${data.report.scope.truncated?.length ? ' Algunos resultados se limitaron al máximo permitido por área.' : ''}${data.report.unavailable?.length ? ' Algunos módulos no estuvieron disponibles temporalmente.' : ''}`);await load();await download(data.report.id);}catch(e){setMessage(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
-  return <section className="panel report-panel"><div className="panelHeading"><div><h2><BarChart3 size={18}/> Reportes</h2><span>Genera y descarga reportes consolidados de tu organización.</span></div><span className="mode-chip">CSV</span></div><form className="assistant-form" onSubmit={generate}><label className="sr-only" htmlFor="report-type">Tipo de reporte</label><select id="report-type" value={type} onChange={e=>setType(e.target.value)}>{Object.entries(types).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select><button className="primary" disabled={busy}>{busy?'Generando…':'Generar CSV'}</button></form>{message&&<p className="assistant-state" role="status">{message}</p>}<div className="orbital-reminder-list"><h3>Historial de reportes</h3>{reports.map(report=><article key={report.id}><div><b>{types[report.type]||report.type}</b><span>{formatDate(report.generatedAt)} · {report.scope?.partial?'alcance parcial':'reporte completo'}</span></div><button className="textButton" disabled={busy} onClick={()=>void download(report.id)}>Descargar CSV</button></article>)}{!reports.length&&<p>No se han generado reportes en esta organización.</p>}</div><small>Cada reporte incluye hasta 1 000 registros por área. Los importes se muestran en su moneda original.</small></section>;
+  return <section className="panel report-panel"><div className="panelHeading"><div><h2><BarChart3 size={18}/> Reportes</h2><span>Genera y descarga reportes consolidados de tu organización.</span></div><span className="mode-chip">CSV</span></div><form className="assistant-form" onSubmit={generate}><CustomSelect id="report-type" value={type} onChange={setType} options={reportOptions} ariaLabel="Tipo de reporte" /><button className="primary" disabled={busy}>{busy?'Generando…':'Generar CSV'}</button></form>{message&&<p className="assistant-state" role="status">{message}</p>}<div className="orbital-reminder-list"><h3>Historial de reportes</h3>{reports.map(report=><article key={report.id}><div><b>{types[report.type]||report.type}</b><span>{formatDate(report.generatedAt)} · {report.scope?.partial?'alcance parcial':'reporte completo'}</span></div><button className="textButton" disabled={busy} onClick={()=>void download(report.id)}>Descargar CSV</button></article>)}{!reports.length&&<p>No se han generado reportes en esta organización.</p>}</div><small>Cada reporte incluye hasta 1 000 registros por área. Los importes se muestran en su moneda original.</small></section>;
 }
 
 const ALLOWED_DOCUMENT_TYPES: Record<string, string> = {
@@ -400,11 +404,15 @@ function DocumentsPanel() {
         <span className="mode-chip">ADJUNTOS</span>
       </div>
       <form className="documents-form" onSubmit={upload}>
-        <label className="sr-only" htmlFor="s3-document-project">Proyecto</label>
-        <select id="s3-document-project" value={projectId} onChange={e => setProjectId(e.target.value)} disabled={!projects.length}>
-          {!projects.length && <option value="">No hay proyectos disponibles</option>}
-          {projects.map(p => <option key={itemId(p)} value={itemId(p)}>{readable(p.name)}</option>)}
-        </select>
+        <CustomSelect
+          id="s3-document-project"
+          value={projectId}
+          onChange={setProjectId}
+          disabled={!projects.length}
+          placeholder="No hay proyectos disponibles"
+          ariaLabel="Proyecto del documento"
+          options={projects.map(p => ({ value: itemId(p), label: readable(p.name) }))}
+        />
         <label className="sr-only" htmlFor="s3-document-file">Archivo</label>
         <input
           id="s3-document-file"
@@ -502,8 +510,34 @@ export function Workspace() {
     return () => { activeOrgLookup = false; };
   }, [user, userProfile.tenantId, userProfile.organizationName]);
 
+  const mergeEntityNames = useCallback((rowsList: Item[][], userRows?: Item[]) => {
+    const patch: Record<string, string> = {};
+    rowsList.forEach(list => {
+      list.forEach(item => {
+        const id = itemId(item);
+        const label = String(item.name || item.email || '').trim();
+        if (id && label) patch[id] = label;
+      });
+    });
+    if (Object.keys(patch).length) {
+      setEntityNames(prev => ({ ...prev, ...patch }));
+    }
+    if (userRows?.length) {
+      setUserProfile(prev => {
+        if (prev.name) return prev;
+        const currentEmail = String(prev.email || (user.includes('@') ? user : '')).trim().toLowerCase();
+        const matched = userRows.find(item => {
+          const itemEmail = String(item.email || '').trim().toLowerCase();
+          return (currentEmail && itemEmail === currentEmail) || (prev.username && itemId(item) === prev.username);
+        });
+        const matchedName = matched && typeof matched.name === 'string' ? matched.name.trim() : '';
+        return matchedName ? { ...prev, name: matchedName } : prev;
+      });
+    }
+  }, [user]);
+
   useEffect(() => {
-    if (!user) return;
+    if (!user || dashboard) return;
     let activeLookup = true;
     const sources = [
       ['portfolio', 'portfolios'],
@@ -513,48 +547,41 @@ export function Workspace() {
     ] as const;
     void Promise.allSettled(sources.map(async ([mod, p]) => (await request<{ items: Item[] }>(mod, p)).items || [])).then(results => {
       if (!activeLookup) return;
-      const map: Record<string, string> = {};
-      results.forEach(res => {
-        if (res.status === 'fulfilled') {
-          res.value.forEach(item => {
-            const id = itemId(item);
-            const label = String(item.name || item.email || '').trim();
-            if (id && label) map[id] = label;
-          });
-        }
-      });
-      setEntityNames(map);
-      const usersResult = results[2];
-      if (usersResult?.status === 'fulfilled') {
-        const matched = usersResult.value.find(item => {
-          const itemEmail = String(item.email || '').trim().toLowerCase();
-          const currentEmail = String(userProfile.email || (user.includes('@') ? user : '')).trim().toLowerCase();
-          return (currentEmail && itemEmail === currentEmail) || (userProfile.username && itemId(item) === userProfile.username);
-        });
-        const matchedName = matched && typeof matched.name === 'string' ? matched.name.trim() : '';
-        if (matchedName) {
-          setUserProfile(prev => (prev.name ? prev : { ...prev, name: matchedName }));
-        }
-      }
+      const fulfilled = results
+        .filter((r): r is PromiseFulfilledResult<Item[]> => r.status === 'fulfilled')
+        .map(r => r.value);
+      const usersResult = results[2]?.status === 'fulfilled' ? results[2].value : undefined;
+      mergeEntityNames(fulfilled, usersResult);
     });
     return () => { activeLookup = false; };
-  }, [user, tab, refreshToken, items.length, userProfile.email, userProfile.username]);
+  }, [user, refreshToken, dashboard, mergeEntityNames]);
 
   const load = useCallback(async (next?: string) => {
     if (!active) return;
     setBusy(true); setError('');
-    try { const data = await request<{ items: Item[]; nextCursor: string | null }>(active.key, `${active.path}${next ? `?cursor=${encodeURIComponent(next)}` : ''}`); setItems(next ? old => [...old, ...data.items] : data.items); setCursor(data.nextCursor); }
+    try {
+      const data = await request<{ items: Item[]; nextCursor: string | null }>(active.key, `${active.path}${next ? `?cursor=${encodeURIComponent(next)}` : ''}`);
+      setItems(next ? old => [...old, ...data.items] : data.items);
+      setCursor(data.nextCursor);
+      if (['portfolio', 'project', 'identity', 'resource'].includes(active.key)) {
+        mergeEntityNames([data.items || []], active.key === 'identity' ? data.items : undefined);
+      }
+    }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
-  }, [active]);
+  }, [active, mergeEntityNames]);
 
   const loadOverview = useCallback(async () => {
     setBusy(true); setError('');
     const results = await Promise.allSettled(modules.map(async m => [m.key, (await request<{ items: Item[] }>(m.key, m.path)).items] as const));
     const available: Record<string, Item[]> = {}; const unavailable: string[] = [];
     results.forEach((result, index) => { if (result.status === 'fulfilled') available[result.value[0]] = result.value[1] || []; else unavailable.push(modules[index].title); });
+    mergeEntityNames(
+      [available.portfolio || [], available.project || [], available.identity || [], available.resource || []],
+      available.identity,
+    );
     setOverview(available); setOverviewErrors(unavailable); setBusy(false);
-  }, []);
+  }, [mergeEntityNames]);
 
   useEffect(() => { if (!user) return; setSearch(''); setFormOpen(false); if (dashboard) void loadOverview(); else void load(); }, [user, tab, dashboard, load, loadOverview, refreshToken]);
 
@@ -582,12 +609,35 @@ export function Workspace() {
     if (active?.key === 'identity') setForm({ role: 'MANAGER', status: 'ACTIVE', password: '' });
     else if (active?.key === 'resource') setForm({ type: 'person', capacity: '1', status: 'ACTIVE' });
     else if (active?.key === 'budget') setForm({ currency: 'USD', allocated: '0', spent: '0' });
+    else if (active?.key === 'portfolio' || active?.key === 'project') setForm({ status: 'ACTIVE' });
     else setForm({});
     setSyncAsResource(true);
     setNotice('');
     setFormOpen(true);
   }
-  function startEdit(item: Item) { setFormOpen(true); const values: Record<string, string> = {}; active?.fields.forEach(field => { values[field] = item[field] == null ? '' : String(item[field]); }); setEditing(item); setForm(values); setNotice(''); }
+  function startEdit(item: Item) {
+    setFormOpen(true);
+    const populate = (source: Item) => {
+      const values: Record<string, string> = {};
+      active?.fields.forEach(field => {
+        values[field] = source[field] == null ? '' : String(source[field]);
+      });
+      setEditing(source);
+      setForm(values);
+    };
+    populate(item);
+    setNotice('');
+    if (active && ['resource', 'budget', 'priority'].includes(active.key)) {
+      const id = itemId(item);
+      if (id) {
+        void request<Item>(active.key, `${active.path}/${encodeURIComponent(id)}`)
+          .then(fresh => {
+            if (fresh && itemId(fresh) === id) populate(fresh);
+          })
+          .catch(() => {});
+      }
+    }
+  }
   async function save(e: React.FormEvent) { e.preventDefault(); if (!active) return; setBusy(true); setError(''); setNotice('');
     try { const payload = Object.fromEntries(Object.entries(form).filter(([, v]) => v.trim()).map(([k, v]) => [k, ['allocated', 'spent', 'capacity', 'impact', 'urgency', 'risk', 'alignment'].includes(k) ? Number(v) : v]));
       if (editing) {
@@ -601,10 +651,33 @@ export function Workspace() {
       }
       setForm({}); setEditing(null); setFormOpen(false);
       setNotice(editing ? 'Cambios guardados.' : active.key === 'identity' ? (payload.password ? 'Integrante creado con acceso inmediato.' : 'Integrante registrado en la organización.') : 'Registro creado.');
+      if (active.key === 'resource' || (active.key === 'identity' && !editing && syncAsResource)) {
+        setAvailabilityTick(n => n + 1);
+      }
       await load();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   }
   const [confirmDelete, setConfirmDelete] = useState<Item | null>(null);
+  const [objectivesPortfolio, setObjectivesPortfolio] = useState<Item | null>(null);
+  const [milestonesProject, setMilestonesProject] = useState<Item | null>(null);
+  const [summaryBudget, setSummaryBudget] = useState<Item | null>(null);
+  const [detailTask, setDetailTask] = useState<Item | null>(null);
+  const [confirmDeleteTask, setConfirmDeleteTask] = useState<Item | null>(null);
+  const [availabilityTick, setAvailabilityTick] = useState(0);
+
+  const userRole = String(orgInfo.role || userProfile.role || '').toUpperCase();
+  const canWrite = userRole !== 'VIEWER';
+  const isAdmin = userRole === 'ADMIN';
+
+  const handleOrgUpdated = useCallback((orgName: string) => {
+    setUserProfile(prev => (prev.organizationName === orgName ? prev : { ...prev, organizationName: orgName }));
+  }, []);
+
+  const reloadTasks = useCallback(async () => {
+    if (!taskProject) return;
+    const data = await request<{ items: Item[] }>('project', `projects/${encodeURIComponent(taskProject)}/tasks`);
+    setTasks(data.items || []);
+  }, [taskProject]);
 
   async function executeRemove(item: Item) {
     if (!active) return;
@@ -614,7 +687,23 @@ export function Workspace() {
       await request(active.key, `${active.path}/${encodeURIComponent(itemId(item))}`, 'DELETE');
       setNotice('Registro eliminado.');
       setConfirmDelete(null);
+      if (active.key === 'resource') setAvailabilityTick(n => n + 1);
       await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function executeDeleteTask(task: Item) {
+    if (!taskProject || !task?.id) return;
+    setBusy(true);
+    setError('');
+    try {
+      await request('project', `projects/${encodeURIComponent(taskProject)}/tasks/${encodeURIComponent(String(task.id))}`, 'DELETE');
+      setConfirmDeleteTask(null);
+      await reloadTasks();
+      setNotice('Tarea eliminada.');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -623,8 +712,8 @@ export function Workspace() {
   }
   async function createTask(e: React.FormEvent) { e.preventDefault(); if (!taskProject) return; setBusy(true); setError(''); try { await request('project', `projects/${encodeURIComponent(taskProject)}/tasks`, 'POST', { title: taskTitle, ...(taskDueDate ? { dueDate: taskDueDate } : {}), ...(taskAssignee ? { assigneeId: taskAssignee } : {}), idempotencyKey: crypto.randomUUID() }); setTaskTitle(''); setTaskDueDate(''); setTaskAssignee(''); const data = await request<{ items: Item[] }>('project', `projects/${encodeURIComponent(taskProject)}/tasks`); setTasks(data.items || []); setNotice('Tarea creada.'); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
   async function moveTask(task: Item, status: string) { try { await request('project', `projects/${encodeURIComponent(taskProject)}/tasks/${encodeURIComponent(String(task.id))}`, 'PATCH', { status }); setTasks(old => old.map(x => x.id === task.id ? { ...x, status } : x)); } catch (e) { setError(String(e)); } }
-  async function createAssignment(e: React.FormEvent) { e.preventDefault(); setBusy(true); setError(''); try { await request('resource', 'assignments', 'POST', { ...assignmentForm, allocation: Number(assignmentForm.allocation) }); const data = await request<{ items: Item[] }>('resource', 'assignments'); setAssignmentRows(data.items || []); setNotice('Asignación creada.'); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
-  async function createExpense(e: React.FormEvent) { e.preventDefault(); const budget = budgetRows.find(b => itemId(b) === expenseForm.budgetId); if (!budget) return; setBusy(true); setError(''); try { await request('budget', 'expenses', 'POST', { budgetId: expenseForm.budgetId, projectId: String(budget.projectId), description: expenseForm.description, amount: Number(expenseForm.amount), currency: expenseForm.currency }); const [expenses, budgets] = await Promise.all([request<any>('budget', 'expenses'), request<any>('budget', 'budgets')]); setExpenseRows(expenses.items || []); setBudgetRows((budgets.items || []).filter((x: Item) => x.entityType !== 'Expense')); setExpenseForm({ ...expenseForm, description: '', amount: '' }); setNotice('Gasto registrado.'); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
+  async function createAssignment(e: React.FormEvent) { e.preventDefault(); setBusy(true); setError(''); try { await request('resource', 'assignments', 'POST', { ...assignmentForm, allocation: Number(assignmentForm.allocation) }); const data = await request<{ items: Item[] }>('resource', 'assignments'); setAssignmentRows(data.items || []); setAvailabilityTick(n => n + 1); setNotice('Asignación creada.'); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
+  async function createExpense(e: React.FormEvent) { e.preventDefault(); const budget = budgetRows.find(b => itemId(b) === expenseForm.budgetId); if (!budget) return; setBusy(true); setError(''); try { await request('budget', 'expenses', 'POST', { budgetId: expenseForm.budgetId, projectId: String(budget.projectId), description: expenseForm.description, amount: Number(expenseForm.amount), currency: String(budget.currency || expenseForm.currency || 'USD') }); const [expenses, budgets] = await Promise.all([request<any>('budget', 'expenses'), request<any>('budget', 'budgets')]); setExpenseRows(expenses.items || []); setBudgetRows((budgets.items || []).filter((x: Item) => x.entityType !== 'Expense')); setExpenseForm({ ...expenseForm, description: '', amount: '' }); setNotice('Gasto registrado.'); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
   async function recalculatePriority(e: React.FormEvent) { e.preventDefault(); setBusy(true); setError(''); try { await request('priority', 'priorities/recalculate', 'POST', { ...priorityForm, impact: Number(priorityForm.impact), urgency: Number(priorityForm.urgency), risk: Number(priorityForm.risk), alignment: Number(priorityForm.alignment) }); const data = await request<{ items: Item[] }>('priority', 'rankings'); setRankingRows(data.items || []); setNotice('Prioridad recalculada y ranking actualizado.'); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
   async function askAssistant(question = assistantQuestion) { if (!question.trim()) return; setAssistantBusy(true); setAssistantAnswer(null); try { setAssistantAnswer(await request('project', 'intelligence/ask', 'POST', { question })); } catch (e) { setAssistantAnswer({ error: e instanceof Error ? e.message : String(e) }); } finally { setAssistantBusy(false); } }
 
@@ -639,7 +728,10 @@ export function Workspace() {
   ) : tab === 'documents' ? (
     <DocumentsPanel/>
   ) : tab === 'assistant' ? (
-    <section className="panel intelligence-panel" id="astra-intelligence"><div className="panelHeading"><div><h2><Sparkles size={18}/> ProFiles Insights</h2><span>Consultas rápidas de solo lectura sobre los proyectos y presupuestos de tu organización.</span></div><span className="mode-chip">CONSULTA RÁPIDA</span></div><form className="assistant-form" onSubmit={e=>{e.preventDefault();void askAssistant();}}><label className="sr-only" htmlFor="assistant-question">Pregunta para Inteligencia ProFiles</label><input id="assistant-question" maxLength={500} value={assistantQuestion} onChange={e=>setAssistantQuestion(e.target.value)} placeholder="¿Qué proyectos están atrasados?"/><button className="primary" disabled={assistantBusy||!assistantQuestion.trim()}>{assistantBusy?'Consultando…':<>Consultar <ArrowRight size={15}/></>}</button></form><div className="assistant-prompts">{['¿Qué proyectos están atrasados?','¿Qué presupuesto está cerca de agotarse?','Resume mis prioridades'].map(q=><button key={q} onClick={()=>{setAssistantQuestion(q);void askAssistant(q);}}>{q}</button>)}</div>{assistantBusy&&<p className="assistant-state" role="status">Consultando la información de tu organización…</p>}{assistantAnswer?.error&&<p className="error assistant-state" role="alert">{assistantAnswer.error}</p>}{assistantAnswer&&!assistantAnswer.error&&<div className="assistant-answer"><strong>Hechos consultados</strong><ul>{assistantAnswer.facts.map((fact:string,i:number)=><li key={i}>{fact}</li>)}</ul><strong>Sugerencias (no ejecutan cambios)</strong><ul>{assistantAnswer.suggestions.map((item:string,i:number)=><li key={i}>{item}</li>)}</ul>{assistantAnswer.relatedProjects?.length>0&&<><strong>Proyectos relacionados</strong><ul>{assistantAnswer.relatedProjects.map((item:any)=><li key={item.id}><a href="/app/projects">{item.name || 'Proyecto'}</a> · <StatusBadge value={item.status} /> · cierre {formatDate(item.endDate)}</li>)}</ul></>}{assistantAnswer.relatedTasks?.length>0&&<><strong>Tareas para revisar</strong><ul>{assistantAnswer.relatedTasks.map((item:any)=><li key={item.id}><a href="/app/tasks">{item.title || 'Tarea'}</a> · vence {formatDate(item.dueDate)}</li>)}</ul></>}<small>Basado en los registros actuales disponibles en tu organización.{assistantAnswer.unavailable.length?` Algunas áreas no estuvieron disponibles: ${assistantAnswer.unavailable.join(', ')}.`:''}</small></div>}</section>
+    <>
+      <section className="panel intelligence-panel" id="astra-intelligence"><div className="panelHeading"><div><h2><Sparkles size={18}/> ProFiles Insights</h2><span>Consultas rápidas de solo lectura sobre los proyectos y presupuestos de tu organización.</span></div><span className="mode-chip">CONSULTA RÁPIDA</span></div><form className="assistant-form" onSubmit={e=>{e.preventDefault();void askAssistant();}}><label className="sr-only" htmlFor="assistant-question">Pregunta para Inteligencia ProFiles</label><input id="assistant-question" maxLength={500} value={assistantQuestion} onChange={e=>setAssistantQuestion(e.target.value)} placeholder="¿Qué proyectos están atrasados?"/><button className="primary" disabled={assistantBusy||!assistantQuestion.trim()}>{assistantBusy?'Consultando…':<>Consultar <ArrowRight size={15}/></>}</button></form><div className="assistant-prompts">{['¿Qué proyectos están atrasados?','¿Qué presupuesto está cerca de agotarse?','Resume mis prioridades'].map(q=><button key={q} onClick={()=>{setAssistantQuestion(q);void askAssistant(q);}}>{q}</button>)}</div>{assistantBusy&&<p className="assistant-state" role="status">Consultando la información de tu organización…</p>}{assistantAnswer?.error&&<p className="error assistant-state" role="alert">{assistantAnswer.error}</p>}{assistantAnswer&&!assistantAnswer.error&&<div className="assistant-answer"><strong>Hechos consultados</strong><ul>{assistantAnswer.facts.map((fact:string,i:number)=><li key={i}>{fact}</li>)}</ul><strong>Sugerencias (no ejecutan cambios)</strong><ul>{assistantAnswer.suggestions.map((item:string,i:number)=><li key={i}>{item}</li>)}</ul>{assistantAnswer.relatedProjects?.length>0&&<><strong>Proyectos relacionados</strong><ul>{assistantAnswer.relatedProjects.map((item:any)=><li key={item.id}><a href="/app/projects">{item.name || 'Proyecto'}</a> · <StatusBadge value={item.status} /> · cierre {formatDate(item.endDate)}</li>)}</ul></>}{assistantAnswer.relatedTasks?.length>0&&<><strong>Tareas para revisar</strong><ul>{assistantAnswer.relatedTasks.map((item:any)=><li key={item.id}><a href="/app/tasks">{item.title || 'Tarea'}</a> · vence {formatDate(item.dueDate)}</li>)}</ul></>}<small>Basado en los registros actuales disponibles en tu organización.{assistantAnswer.unavailable.length?` Algunas áreas no estuvieron disponibles: ${assistantAnswer.unavailable.join(', ')}.`:''}</small></div>}</section>
+      <OrbitalPanel request={request} canProposeTask={canWrite} />
+    </>
   ) : tab === 'tasks' ? (
     <>
       <section className="panel">
@@ -648,18 +740,34 @@ export function Workspace() {
             <h2>Tablero Kanban</h2>
             <span>Organiza tareas operativas por proyecto y estado de ejecución</span>
           </div>
-          <label className="kanban-project-picker">
-            <span className="sr-only">Proyecto activo</span>
-            <select value={taskProject} onChange={e => setTaskProject(e.target.value)}>
-              <option value="">Selecciona proyecto</option>
-              {taskProjects.map(p => <option key={itemId(p)} value={itemId(p)}>{readable(p.name)}</option>)}
-            </select>
-          </label>
+          <div className="kanban-project-picker">
+            <CustomSelect
+              value={taskProject}
+              onChange={setTaskProject}
+              ariaLabel="Proyecto activo"
+              placeholder="Selecciona proyecto"
+              options={[
+                { value: '', label: 'Selecciona proyecto' },
+                ...taskProjects.map(p => ({ value: itemId(p), label: readable(p.name) })),
+              ]}
+            />
+          </div>
         </div>
         <form className="create" onSubmit={createTask}>
           <label>Nueva tarea<input required maxLength={180} value={taskTitle} onChange={e => setTaskTitle(e.target.value)} placeholder="Ej. Preparar cronograma"/></label>
           <label>Fecha de vencimiento<input type="date" value={taskDueDate} onChange={e => setTaskDueDate(e.target.value)}/></label>
-          <label>Responsable<select value={taskAssignee} onChange={e => setTaskAssignee(e.target.value)}><option value="">Sin asignar</option>{teamMembers.map(m => <option key={itemId(m)} value={itemId(m)}>{readable(m.name || m.email)}</option>)}</select></label>
+          <label>
+            Responsable
+            <CustomSelect
+              value={taskAssignee}
+              onChange={setTaskAssignee}
+              ariaLabel="Responsable de la nueva tarea"
+              options={[
+                { value: '', label: 'Sin asignar' },
+                ...teamMembers.map(m => ({ value: itemId(m), label: readable(m.name || m.email) })),
+              ]}
+            />
+          </label>
           <button disabled={busy || !taskProject}><Plus size={16}/>Crear</button>
         </form>
       </section>
@@ -704,11 +812,40 @@ export function Workspace() {
                       </div>
                     )}
                     <div className="taskCard-footer">
-                      <select aria-label={`Estado de ${readable(x.title)}`} value={String(x.status)} onChange={e => void moveTask(x, e.target.value)}>
-                        {['TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE'].map(v => <option key={v} value={v}>{formatTaskStatus(v)}</option>)}
-                      </select>
+                      <div className="taskCard-status-control">
+                        <CustomSelect
+                          size="sm"
+                          searchable={false}
+                          ariaLabel={`Estado de ${readable(x.title)}`}
+                          value={String(x.status)}
+                          onChange={val => void moveTask(x, val)}
+                          options={['TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE'].map(v => ({ value: v, label: formatTaskStatus(v) }))}
+                        />
+                      </div>
                       {s === 'TODO' && <button type="button" className="task-quick-btn" onClick={() => void moveTask(x, 'IN_PROGRESS')}>Iniciar</button>}
                       {s === 'IN_PROGRESS' && <button type="button" className="task-quick-btn complete" onClick={() => void moveTask(x, 'DONE')}>Completar</button>}
+                      <div className="taskCard-actions">
+                        <button
+                          type="button"
+                          className="taskCard-icon-btn"
+                          title="Ver o editar tarea"
+                          aria-label={`Editar ${readable(x.title)}`}
+                          onClick={() => setDetailTask(x)}
+                        >
+                          <Pencil size={13} />
+                        </button>
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            className="taskCard-icon-btn is-danger"
+                            title="Eliminar tarea"
+                            aria-label={`Eliminar ${readable(x.title)}`}
+                            onClick={() => setConfirmDeleteTask(x)}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </article>
                 );
@@ -718,13 +855,119 @@ export function Workspace() {
           );
         })}
       </div>
+      <TaskDetailModal
+        projectId={taskProject}
+        task={detailTask}
+        teamMembers={teamMembers}
+        onClose={() => setDetailTask(null)}
+        onUpdated={reloadTasks}
+        request={request}
+        canWrite={canWrite}
+        canDelete={isAdmin}
+      />
+      {confirmDeleteTask && (
+        <Modal
+          open={Boolean(confirmDeleteTask)}
+          title="Eliminar tarea"
+          subtitle="Esta acción no se puede deshacer."
+          onClose={() => setConfirmDeleteTask(null)}
+        >
+          <div className="confirm-delete-box">
+            <p className="confirm-delete-message">
+              ¿Deseas eliminar permanentemente la tarea <strong>“{readable(confirmDeleteTask.title)}”</strong>?
+            </p>
+            <div className="modal-form-actions">
+              <button type="button" className="secondary" onClick={() => setConfirmDeleteTask(null)}>Cancelar</button>
+              <button type="button" className="danger" disabled={busy} onClick={() => void executeDeleteTask(confirmDeleteTask)}>
+                {busy ? 'Eliminando…' : 'Eliminar tarea'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </>
   ) : tab === 'assignments' ? (
-    <><section className="panel"><h2>Asignar recurso a proyecto</h2><form className="create" onSubmit={createAssignment}><label>Recurso<select required value={assignmentForm.resourceId} onChange={e=>setAssignmentForm({...assignmentForm,resourceId:e.target.value})}><option value="">Selecciona</option>{resourceRows.map(x=><option key={itemId(x)} value={itemId(x)}>{readable(x.name)}</option>)}</select></label><label>Proyecto<select required value={assignmentForm.projectId} onChange={e=>setAssignmentForm({...assignmentForm,projectId:e.target.value})}><option value="">Selecciona</option>{projectRows.map(x=><option key={itemId(x)} value={itemId(x)}>{readable(x.name)}</option>)}</select></label><label>Asignación (%)<input type="number" min="1" max="100" value={Number(assignmentForm.allocation)*100} onChange={e=>setAssignmentForm({...assignmentForm,allocation:String(Number(e.target.value)/100)})}/></label><button disabled={busy}><UserPlus size={16}/>Asignar</button></form></section><DataTable title="Asignaciones" rows={assignmentRows} fields={['resourceId','projectId','allocation','startDate','endDate']} entityNames={entityNames}/></>
+    <>
+      <section className="panel">
+        <h2>Asignar recurso a proyecto</h2>
+        <form className="create" onSubmit={createAssignment}>
+          <label>
+            Recurso
+            <CustomSelect
+              required
+              value={assignmentForm.resourceId}
+              onChange={val => setAssignmentForm({ ...assignmentForm, resourceId: val })}
+              placeholder="Selecciona recurso"
+              ariaLabel="Recurso a asignar"
+              options={resourceRows.map(x => ({ value: itemId(x), label: readable(x.name) }))}
+            />
+          </label>
+          <label>
+            Proyecto
+            <CustomSelect
+              required
+              value={assignmentForm.projectId}
+              onChange={val => setAssignmentForm({ ...assignmentForm, projectId: val })}
+              placeholder="Selecciona proyecto"
+              ariaLabel="Proyecto asignado"
+              options={projectRows.map(x => ({ value: itemId(x), label: readable(x.name) }))}
+            />
+          </label>
+          <label>Asignación (%)<input type="number" min="1" max="100" value={Number(assignmentForm.allocation)*100} onChange={e=>setAssignmentForm({...assignmentForm,allocation:String(Number(e.target.value)/100)})}/></label>
+          <button disabled={busy}><UserPlus size={16}/>Asignar</button>
+        </form>
+      </section>
+      <TeamAvailabilityPanel request={request} refreshToken={refreshToken + availabilityTick} />
+      <DataTable title="Asignaciones" rows={assignmentRows} fields={['resourceId','projectId','allocation','startDate','endDate']} entityNames={entityNames}/>
+    </>
   ) : tab === 'expenses' ? (
-    <><section className="panel"><h2>Registrar gasto</h2><form className="create" onSubmit={createExpense}><label>Presupuesto<select required value={expenseForm.budgetId} onChange={e=>setExpenseForm({...expenseForm,budgetId:e.target.value})}><option value="">Selecciona</option>{budgetRows.map(x=><option key={itemId(x)} value={itemId(x)}>{entityNames[String(x.projectId)] || (isOpaqueId(x.projectId) ? 'Proyecto' : readable(x.projectId))} · {readable(x.currency)}</option>)}</select></label><label>Descripción<input required value={expenseForm.description} onChange={e=>setExpenseForm({...expenseForm,description:e.target.value})}/></label><label>Importe<input required type="number" min="0.01" step="0.01" value={expenseForm.amount} onChange={e=>setExpenseForm({...expenseForm,amount:e.target.value})}/></label><button disabled={busy}><ReceiptText size={16}/>Registrar</button></form></section><DataTable title="Gastos recientes" rows={expenseRows} fields={['description','projectId','amount','currency','createdAt']} entityNames={entityNames}/></>
+    <>
+      <section className="panel">
+        <h2>Registrar gasto</h2>
+        <form className="create" onSubmit={createExpense}>
+          <label>
+            Presupuesto
+            <CustomSelect
+              required
+              value={expenseForm.budgetId}
+              onChange={val => setExpenseForm({ ...expenseForm, budgetId: val })}
+              placeholder="Selecciona presupuesto"
+              ariaLabel="Presupuesto asociado"
+              options={budgetRows.map(x => ({
+                value: itemId(x),
+                label: `${entityNames[String(x.projectId)] || (isOpaqueId(x.projectId) ? 'Proyecto' : readable(x.projectId))} · ${readable(x.currency)}`,
+              }))}
+            />
+          </label>
+          <label>Descripción<input required value={expenseForm.description} onChange={e=>setExpenseForm({...expenseForm,description:e.target.value})}/></label>
+          <label>Importe<input required type="number" min="0.01" step="0.01" value={expenseForm.amount} onChange={e=>setExpenseForm({...expenseForm,amount:e.target.value})}/></label>
+          <button disabled={busy}><ReceiptText size={16}/>Registrar</button>
+        </form>
+      </section>
+      <DataTable title="Gastos recientes" rows={expenseRows} fields={['description','projectId','amount','currency','createdAt']} entityNames={entityNames}/>
+    </>
   ) : tab === 'rankings' ? (
-    <><section className="panel"><h2>Recalcular prioridad</h2><form className="create" onSubmit={recalculatePriority}><label>Proyecto<select required value={priorityForm.projectId} onChange={e=>setPriorityForm({...priorityForm,projectId:e.target.value})}><option value="">Selecciona</option>{projectRows.map(x=><option key={itemId(x)} value={itemId(x)}>{readable(x.name)}</option>)}</select></label>{(['impact','urgency','risk','alignment'] as const).map(k=><label key={k}>{fieldLabel(k)}<input type="number" min="0" max="100" value={priorityForm[k]} onChange={e=>setPriorityForm({...priorityForm,[k]:e.target.value})}/></label>)}<button disabled={busy}><ArrowUpDown size={16}/>Calcular</button></form></section><DataTable title="Ranking de proyectos" rows={rankingRows} fields={['rank','projectId','score','impact','urgency','risk','alignment']} entityNames={entityNames}/></>
+    <>
+      <section className="panel">
+        <h2>Recalcular prioridad</h2>
+        <form className="create" onSubmit={recalculatePriority}>
+          <label>
+            Proyecto
+            <CustomSelect
+              required
+              value={priorityForm.projectId}
+              onChange={val => setPriorityForm({ ...priorityForm, projectId: val })}
+              placeholder="Selecciona proyecto"
+              ariaLabel="Proyecto a evaluar"
+              options={projectRows.map(x => ({ value: itemId(x), label: readable(x.name) }))}
+            />
+          </label>
+          {(['impact','urgency','risk','alignment'] as const).map(k=><label key={k}>{fieldLabel(k)}<input type="number" min="0" max="100" value={priorityForm[k]} onChange={e=>setPriorityForm({...priorityForm,[k]:e.target.value})}/></label>)}
+          <button disabled={busy}><ArrowUpDown size={16}/>Calcular</button>
+        </form>
+      </section>
+      <DataTable title="Ranking de proyectos" rows={rankingRows} fields={['rank','projectId','score','impact','urgency','risk','alignment']} entityNames={entityNames}/>
+    </>
   ) : null;
 
   const filtered = useMemo(() => items.filter(item => Object.values(item).some(v => String(v ?? '').toLowerCase().includes(search.toLowerCase()))), [items, search]);
@@ -792,16 +1035,14 @@ export function Workspace() {
       </section></> : active ? <>
         <div className="module-intro"><div><span className="module-kicker">TU ESPACIO DE TRABAJO</span><h2>{active.title}</h2><p>{active.key === 'identity' ? 'Agrega integrantes a tu organización, define su nivel de acceso y habilítalos para colaborar en proyectos.' : 'Consulta y organiza los registros disponibles para tu equipo.'}</p></div><button className="primary" onClick={startCreate}><Plus size={16}/> {active.key === 'identity' ? 'Nuevo miembro' : 'Nuevo registro'}</button></div>
         {active.key === 'identity' && (
-          <div className="org-identity-banner" aria-label="Código de invitación de la organización">
-            <div>
-              <strong>Invita a tu equipo</strong>
-              <p>Puedes crear cuentas directamente con <b>Nuevo miembro</b>, o compartir este código de invitación para que tus compañeros se unan al registrarse.</p>
-            </div>
-            <div className="org-identity-meta">
-              <span className="invite-code-label">Código de invitación</span>
-              {orgInfo.tenantId && <CopyIdBadge id={orgInfo.tenantId} full />}
-            </div>
-          </div>
+          <OrganizationProfileBanner
+            tenantId={orgInfo.tenantId}
+            organizationName={userProfile.organizationName}
+            isAdmin={isAdmin}
+            request={request}
+            refreshToken={refreshToken}
+            onOrganizationUpdated={handleOrgUpdated}
+          />
         )}
         <Modal
           open={formOpen}
@@ -823,46 +1064,88 @@ export function Workspace() {
                 <label key={field}>
                   {customLabel}{active.required.includes(field) ? ' *' : ''}
                   {referenceOptions[field]?.length ? (
-                    <select required={active.required.includes(field)} value={form[field] || ''} onChange={e => setForm({ ...form, [field]: e.target.value })}>
-                      <option value="">Selecciona</option>
-                      {referenceOptions[field].map(item => <option key={itemId(item)} value={itemId(item)}>{readable(item.name || item.email || itemId(item))}</option>)}
-                      {form[field] && !referenceOptions[field].some(item => itemId(item) === form[field]) && <option value={form[field]}>Valor actual</option>}
-                    </select>
+                    <CustomSelect
+                      required={active.required.includes(field)}
+                      value={form[field] || ''}
+                      onChange={val => setForm({ ...form, [field]: val })}
+                      placeholder="Selecciona"
+                      ariaLabel={customLabel}
+                      options={[
+                        { value: '', label: 'Selecciona' },
+                        ...referenceOptions[field].map(item => ({
+                          value: itemId(item),
+                          label: readable(item.name || item.email || itemId(item)),
+                        })),
+                        ...(form[field] && !referenceOptions[field].some(item => itemId(item) === form[field])
+                          ? [{ value: form[field], label: 'Valor actual' }]
+                          : []),
+                      ]}
+                    />
                   ) : field === 'role' ? (
-                    <select required={active.required.includes(field)} value={form[field] || 'MANAGER'} onChange={e => setForm({ ...form, [field]: e.target.value })}>
-                      <option value="MANAGER">Gestor — Crea y edita proyectos y tareas</option>
-                      <option value="VIEWER">Solo lectura — Consulta sin realizar cambios</option>
-                      <option value="ADMIN">Administrador — Control completo de la organización</option>
-                    </select>
+                    <CustomSelect
+                      required={active.required.includes(field)}
+                      value={form[field] || 'MANAGER'}
+                      onChange={val => setForm({ ...form, [field]: val })}
+                      ariaLabel="Rol"
+                      options={[
+                        { value: 'MANAGER', label: 'Gestor', description: 'Crea y edita proyectos y tareas' },
+                        { value: 'VIEWER', label: 'Solo lectura', description: 'Consulta sin realizar cambios' },
+                        { value: 'ADMIN', label: 'Administrador', description: 'Control completo de la organización' },
+                      ]}
+                    />
                   ) : field === 'type' && active.key === 'resource' ? (
-                    <select required={active.required.includes(field)} value={form[field] || 'person'} onChange={e => setForm({ ...form, [field]: e.target.value })}>
-                      <option value="person">Persona / Especialista</option>
-                      <option value="team">Equipo / Célula</option>
-                      <option value="equipment">Equipamiento / Licencia</option>
-                    </select>
+                    <CustomSelect
+                      required={active.required.includes(field)}
+                      value={form[field] || 'person'}
+                      onChange={val => setForm({ ...form, [field]: val })}
+                      ariaLabel="Tipo de recurso"
+                      options={[
+                        { value: 'person', label: 'Persona / Especialista' },
+                        { value: 'team', label: 'Equipo / Célula' },
+                        { value: 'equipment', label: 'Equipamiento / Licencia' },
+                      ]}
+                    />
                   ) : field === 'capacity' && active.key === 'resource' ? (
-                    <select required={active.required.includes(field)} value={form[field] || '1'} onChange={e => setForm({ ...form, [field]: e.target.value })}>
-                      <option value="1">100% — Tiempo completo</option>
-                      <option value="0.75">75% — Tres cuartos</option>
-                      <option value="0.5">50% — Medio tiempo</option>
-                      <option value="0.25">25% — Cuarto de tiempo</option>
-                    </select>
+                    <CustomSelect
+                      required={active.required.includes(field)}
+                      value={form[field] || '1'}
+                      onChange={val => setForm({ ...form, [field]: val })}
+                      ariaLabel="Capacidad"
+                      options={[
+                        { value: '1', label: '100%', description: 'Tiempo completo' },
+                        { value: '0.75', label: '75%', description: 'Tres cuartos' },
+                        { value: '0.5', label: '50%', description: 'Medio tiempo' },
+                        { value: '0.25', label: '25%', description: 'Cuarto de tiempo' },
+                      ]}
+                    />
                   ) : field === 'currency' ? (
-                    <select required={active.required.includes(field)} value={form[field] || 'USD'} onChange={e => setForm({ ...form, [field]: e.target.value })}>
-                      <option value="USD">USD (Dólares)</option>
-                      <option value="PEN">PEN (Soles)</option>
-                      <option value="EUR">EUR (Euros)</option>
-                    </select>
+                    <CustomSelect
+                      required={active.required.includes(field)}
+                      value={form[field] || 'USD'}
+                      onChange={val => setForm({ ...form, [field]: val })}
+                      ariaLabel="Moneda"
+                      options={[
+                        { value: 'USD', label: 'USD (Dólares)' },
+                        { value: 'PEN', label: 'PEN (Soles)' },
+                        { value: 'EUR', label: 'EUR (Euros)' },
+                      ]}
+                    />
                   ) : field === 'status' ? (
-                    <select required={active.required.includes(field)} value={form[field] || 'ACTIVE'} onChange={e => setForm({ ...form, [field]: e.target.value })}>
-                      <option value="">Selecciona estado</option>
-                      <option value="ACTIVE">Activo</option>
-                      <option value="PLANNED">Planificado</option>
-                      <option value="IN_PROGRESS">En progreso</option>
-                      <option value="ON_HOLD">En pausa</option>
-                      <option value="COMPLETED">Completado</option>
-                      <option value="BLOCKED">Bloqueado</option>
-                    </select>
+                    <CustomSelect
+                      required={active.required.includes(field)}
+                      value={form[field] || 'ACTIVE'}
+                      onChange={val => setForm({ ...form, [field]: val })}
+                      placeholder="Selecciona estado"
+                      ariaLabel="Estado"
+                      options={[
+                        { value: 'ACTIVE', label: 'Activo' },
+                        { value: 'PLANNED', label: 'Planificado' },
+                        { value: 'IN_PROGRESS', label: 'En progreso' },
+                        { value: 'ON_HOLD', label: 'En pausa' },
+                        { value: 'COMPLETED', label: 'Completado' },
+                        { value: 'BLOCKED', label: 'Bloqueado' },
+                      ]}
+                    />
                   ) : (
                     <input
                       required={active.required.includes(field)}
@@ -965,7 +1248,44 @@ export function Workspace() {
           </Modal>
         )}
 
-        <section className="panel"><div className="panelHeading listHeading"><div><h2>Registros</h2><span>{filtered.length} {filtered.length === 1 ? 'registro' : 'registros'}</span></div><label className="searchBox"><Search size={16} /><input aria-label="Buscar registros" placeholder="Buscar…" value={search} onChange={e => setSearch(e.target.value)} /></label></div><div className="tableWrap"><table><thead><tr>{active.fields.slice(0, 4).map(f => <th key={f}>{fieldLabel(f)}</th>)}<th>Acciones</th></tr></thead><tbody>{pagedFiltered.map((item, i) => <tr key={itemId(item) || i}>{active.fields.slice(0, 4).map(f => <td key={f}>{renderFormattedCell(f, item, entityNames)}</td>)}<td><div className="rowActions">{active.key === 'project' && <><button type="button" onClick={() => { setTaskProject(itemId(item)); selectTab('tasks'); }}>Tareas</button><button type="button" onClick={() => { setAssignmentForm(old => ({ ...old, projectId: itemId(item) })); selectTab('assignments'); }}>Equipo</button></>}<button onClick={() => startEdit(item)}>Editar</button><button className="deleteAction" onClick={() => setConfirmDelete(item)}>Eliminar</button></div></td></tr>)}</tbody></table>{!filtered.length && <div className="empty">{busy ? 'Cargando registros…' : search ? 'No hay resultados para esta búsqueda.' : 'No hay registros todavía. Crea uno para comenzar.'}</div>}</div><PaginationBar page={page} totalItems={filtered.length} onPageChange={setPage} hasMore={Boolean(cursor)} busy={busy} onLoadMore={() => { if (cursor) void load(cursor); }} /></section>
+        <section className="panel"><div className="panelHeading listHeading"><div><h2>Registros</h2><span>{filtered.length} {filtered.length === 1 ? 'registro' : 'registros'}</span></div><label className="searchBox"><Search size={16} /><input aria-label="Buscar registros" placeholder="Buscar…" value={search} onChange={e => setSearch(e.target.value)} /></label></div><div className="tableWrap"><table><thead><tr>{active.fields.slice(0, 4).map(f => <th key={f}>{fieldLabel(f)}</th>)}<th>Acciones</th></tr></thead><tbody>{pagedFiltered.map((item, i) => <tr key={itemId(item) || i}>{active.fields.slice(0, 4).map(f => <td key={f}>{renderFormattedCell(f, item, entityNames)}</td>)}<td><div className="rowActions">{active.key === 'portfolio' && <button type="button" onClick={() => setObjectivesPortfolio(item)}><Target size={13} />Objetivos</button>}{active.key === 'project' && <><button type="button" onClick={() => { setTaskProject(itemId(item)); selectTab('tasks'); }}>Tareas</button><button type="button" onClick={() => setMilestonesProject(item)}><Flag size={13} />Hitos</button><button type="button" onClick={() => { setAssignmentForm(old => ({ ...old, projectId: itemId(item) })); selectTab('assignments'); }}>Equipo</button></>}{active.key === 'budget' && <button type="button" onClick={() => setSummaryBudget(item)}><PieChart size={13} />Resumen</button>}<button onClick={() => startEdit(item)}>Editar</button><button className="deleteAction" onClick={() => setConfirmDelete(item)}>Eliminar</button></div></td></tr>)}</tbody></table>{!filtered.length && <div className="empty">{busy ? 'Cargando registros…' : search ? 'No hay resultados para esta búsqueda.' : 'No hay registros todavía. Crea uno para comenzar.'}</div>}</div><PaginationBar page={page} totalItems={filtered.length} onPageChange={setPage} hasMore={Boolean(cursor)} busy={busy} onLoadMore={() => { if (cursor) void load(cursor); }} /></section>
+
+        {active.key === 'resource' && <TeamAvailabilityPanel request={request} refreshToken={refreshToken + availabilityTick} />}
+        {active.key === 'identity' && (
+          <MembershipsPanel
+            isAdmin={isAdmin}
+            users={items}
+            entityNames={entityNames}
+            request={request}
+            refreshToken={refreshToken}
+            onChanged={() => setRefreshToken(n => n + 1)}
+          />
+        )}
+
+        <PortfolioObjectivesModal
+          portfolio={objectivesPortfolio}
+          onClose={() => setObjectivesPortfolio(null)}
+          request={request}
+          canWrite={canWrite}
+          canDelete={isAdmin}
+        />
+        <ProjectMilestonesModal
+          project={milestonesProject}
+          onClose={() => setMilestonesProject(null)}
+          request={request}
+          canWrite={canWrite}
+          canDelete={isAdmin}
+        />
+        <BudgetSummaryModal
+          budget={summaryBudget}
+          projectName={summaryBudget ? (entityNames[String(summaryBudget.projectId)] || '') : ''}
+          onClose={() => setSummaryBudget(null)}
+          onRegisterExpense={budgetId => {
+            setExpenseForm(old => ({ ...old, budgetId }));
+            selectTab('expenses');
+          }}
+          request={request}
+        />
       </> : specialView}
     </main></div>;
 }

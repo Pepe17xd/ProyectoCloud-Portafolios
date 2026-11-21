@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const files = [
@@ -10,9 +10,42 @@ const files = [
   'frontend/src/features/landing/Landing.tsx',
   'frontend/src/features/landing/Landing.css',
   'frontend/src/features/workspace/Workspace.tsx',
+  'frontend/src/features/workspace/DomainModals.tsx',
+  'frontend/src/features/workspace/OrbitalPanel.tsx',
+  'frontend/src/features/workspace/TeamAvailabilityPanel.tsx',
+  'frontend/src/features/workspace/OrganizationAdminPanels.tsx',
+  'frontend/src/components/CustomSelect.tsx',
+  'frontend/src/components/CustomSelect.css',
   'frontend/src/DecisionLab.tsx',
   'frontend/src/DecisionLab.css',
 ];
+
+async function collectTsxFiles(dirUrl) {
+  const entries = await readdir(dirUrl, { withFileTypes: true });
+  const collected = [];
+  for (const entry of entries) {
+    const child = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, dirUrl);
+    if (entry.isDirectory()) {
+      collected.push(...await collectTsxFiles(child));
+    } else if (/\.(tsx|jsx)$/.test(entry.name)) {
+      collected.push(child);
+    }
+  }
+  return collected;
+}
+
+test('frontend sources use CustomSelect and contain zero native <select> elements', async () => {
+  const tsxFiles = await collectTsxFiles(new URL('../frontend/src/', import.meta.url));
+  assert.ok(tsxFiles.length > 0, 'Expected frontend TSX files');
+  for (const fileUrl of tsxFiles) {
+    const content = await readFile(fileUrl, 'utf8');
+    assert.doesNotMatch(
+      content,
+      /<select[\s>]/i,
+      `Found forbidden native <select> element in ${fileUrl.pathname}`,
+    );
+  }
+});
 
 test('frontend sources are valid UTF-8 and HTML declares the matching charset', async () => {
   const contents = await Promise.all(files.map((file) => readFile(new URL(`../${file}`, import.meta.url))));

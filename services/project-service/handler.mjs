@@ -275,7 +275,7 @@ export async function api(event) {
           const marker={...operationKey,taskId:cid,projectId:id,userId,createdAt:item.createdAt};
           try{await db.send(new TransactWriteCommand({TransactItems:[{Put:{TableName:table,Item:item,ConditionExpression:'attribute_not_exists(pk) AND attribute_not_exists(sk)'}},{Put:{TableName:table,Item:marker,ConditionExpression:'attribute_not_exists(pk) AND attribute_not_exists(sk)'}}]}));}
           catch(error){if(error.name!=='TransactionCanceledException')throw error;const prior=await db.send(new GetCommand({TableName:table,Key:operationKey}));if(!prior.Item)throw error;const existing=await db.send(new GetCommand({TableName:table,Key:childKey(prior.Item.taskId)}));if(!existing.Item)throw error;return reply(200,{...existing.Item,idempotentReplay:true});}
-        }else await db.send(new PutCommand({TableName:table,Item,ConditionExpression:'attribute_not_exists(pk) AND attribute_not_exists(sk)'}));
+        }else await db.send(new PutCommand({TableName:table,Item:item,ConditionExpression:'attribute_not_exists(pk) AND attribute_not_exists(sk)'}));
         return reply(201,item);
       }
       if(method==='GET'&&childId){const result=await db.send(new GetCommand({TableName:table,Key:childKey(childId)}));return result.Item?reply(200,result.Item):reply(404,{error:'Not found'});}

@@ -66,9 +66,8 @@ def test_local_cors_preflight_allows_frontend_origin():
 
 
 def test_assignment_transaction_reserves_capacity(monkeypatch):
+    from decimal import Decimal
     from types import SimpleNamespace
-
-    from boto3.dynamodb.types import TypeDeserializer
 
     class TransactionTable:
         name = "resource-test"
@@ -85,13 +84,14 @@ def test_assignment_transaction_reserves_capacity(monkeypatch):
 
         def transact_write_items(self, TransactItems):
             self.transactions.append(TransactItems)
-            deserializer = TypeDeserializer()
             put = TransactItems[0]["Put"]
-            item = {k: deserializer.deserialize(v) for k, v in put["Item"].items()}
+            item = dict(put["Item"])
+            assert isinstance(item["allocation"], Decimal)
             self.items[(item["pk"], item["sk"])] = item
-            values = {k: deserializer.deserialize(v) for k, v in TransactItems[1]["Update"]["ExpressionAttributeValues"].items()}
+            values = TransactItems[1]["Update"]["ExpressionAttributeValues"]
+            assert isinstance(values[":allocation"], Decimal)
             self.resource["allocated"] += float(values[":allocation"])
-            self.resource["remainingCapacity"] -= float(values[":allocation"] )
+            self.resource["remainingCapacity"] -= float(values[":allocation"])
 
     fake = TransactionTable()
     monkeypatch.setattr(module, "table", fake)
@@ -104,3 +104,41 @@ def test_assignment_transaction_reserves_capacity(monkeypatch):
     assert fake.resource["allocated"] == 0.75
     assert fake.resource["remainingCapacity"] == 0.25
     assert "#remaining >= :allocation" in fake.transactions[0][1]["Update"]["ConditionExpression"]
+
+
+def test_assignment_idempotency_matches_decimal_allocation(monkeypatch):
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    class TransactionTable:
+        name = "resource-test"
+
+        def __init__(self):
+            self.resource = {"pk": "TENANT#t1", "sk": "ITEM#r1", "id": "r1", "entityType": "Resource", "capacity": Decimal("1"), "allocated": Decimal("0"), "remainingCapacity": Decimal("1")}
+            self.items = {("TENANT#t1", "ITEM#r1"): self.resource}
+            self.transactions = []
+            self.meta = SimpleNamespace(client=self)
+
+        def get_item(self, Key):
+            item = self.items.get((Key["pk"], Key["sk"]))
+            return {"Item": item} if item else {}
+
+        def transact_write_items(self, TransactItems):
+            self.transactions.append(TransactItems)
+            item = dict(TransactItems[0]["Put"]["Item"])
+            assert isinstance(item["allocation"], Decimal)
+            self.items[(item["pk"], item["sk"])] = item
+            allocation = TransactItems[1]["Update"]["ExpressionAttributeValues"][":allocation"]
+            self.resource["allocated"] += allocation
+            self.resource["remainingCapacity"] -= allocation
+
+    fake = TransactionTable()
+    monkeypatch.setattr(module, "table", fake)
+    monkeypatch.setattr(module, "assert_project_reference", lambda project_id, authorization: None)
+    body = module.AssignmentIn(resourceId="r1", projectId="p1", allocation=0.4, idempotencyKey="request-0004")
+    actor = {"tenantId": "t1", "userId": "u1", "role": "MANAGER"}
+    first = module.assign(body, "Bearer local", actor)
+    second = module.assign(body, "Bearer local", actor)
+    assert len(fake.transactions) == 1
+    assert first["id"] == second["id"]
+    assert module.dynamo_safe(first) == module.dynamo_safe(second)

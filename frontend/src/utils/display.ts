@@ -216,6 +216,11 @@ export function formatScenarioLabel(key: string): string {
 }
 
 const DECISION_METRIC_LABELS: Record<string, string> = {
+  budgetAvailable: 'Saldo presupuestal disponible',
+  plannedCost: 'Costo planificado',
+  projectsFundable: 'Proyectos financiables',
+  prioritizedProjects: 'Proyectos priorizados',
+  resourcesOverCapacity: 'Recursos sobrecargados',
   totalPlannedCost: 'Costo planificado total',
   totalBudgetAllocated: 'Presupuesto asignado total',
   totalBudgetSpent: 'Gasto ejecutado total',
@@ -247,10 +252,26 @@ export function formatDecisionMetricLabel(key: string): string {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
 }
 
+const RECURRENCE_LABELS: Record<string, string> = {
+  ONCE: 'Una vez',
+  DAILY: 'Diario',
+  WEEKLY: 'Semanal',
+};
+
+/** Maps reminder recurrence enums to Spanish labels. */
+export function formatRecurrenceLabel(value?: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) return 'Una vez';
+  const key = value.trim().toUpperCase();
+  return RECURRENCE_LABELS[key] || value.trim();
+}
+
 const CONSTRAINT_CODE_LABELS: Record<string, string> = {
+  BUDGET_LIMIT_EXCEEDED: 'El costo planificado supera el límite presupuestal definido.',
   BUDGET_EXCEEDED: 'El costo planificado supera el límite presupuestal disponible.',
+  RESOURCE_OVER_CAPACITY: 'Uno o más recursos superan su capacidad máxima registrada.',
   RESOURCE_OVERALLOCATED: 'Al menos un recurso excede su capacidad máxima asignada.',
   OVER_CAPACITY: 'La asignación propuesta supera la capacidad disponible del equipo.',
+  DATE_RANGE_INVALID: 'La fecha de cierre simulada es anterior a la fecha de inicio.',
   DEADLINE_CONFLICT: 'Las fechas planificadas presentan un conflicto de cierre.',
   MISSING_DATA: 'Faltan registros completos para calcular todas las variables de este escenario.',
 };

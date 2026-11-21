@@ -92,9 +92,8 @@ def test_local_cors_preflight_allows_frontend_origin():
 
 
 def test_expense_updates_budget_atomically_and_is_idempotent(monkeypatch):
+    from decimal import Decimal
     from types import SimpleNamespace
-
-    from boto3.dynamodb.types import TypeDeserializer
 
     class TransactionTable:
         name = "budget-test"
@@ -112,13 +111,14 @@ def test_expense_updates_budget_atomically_and_is_idempotent(monkeypatch):
 
         def transact_write_items(self, TransactItems):
             self.transactions.append(TransactItems)
-            deserializer = TypeDeserializer()
             put = TransactItems[0]["Put"]
-            item = {k: deserializer.deserialize(v) for k, v in put["Item"].items()}
+            item = dict(put["Item"])
+            assert isinstance(item["amount"], Decimal)
             update = TransactItems[1]["Update"]
-            key = tuple(deserializer.deserialize(v) for v in update["Key"].values())
-            budget = self.items[key]
-            values = {k: deserializer.deserialize(v) for k, v in update["ExpressionAttributeValues"].items()}
+            budget_key = (update["Key"]["pk"], update["Key"]["sk"])
+            budget = self.items[budget_key]
+            values = update["ExpressionAttributeValues"]
+            assert isinstance(values[":amount"], Decimal)
             budget["spent"] += values[":amount"]
             budget["balance"] = budget["allocated"] - budget["spent"]
             self.items[(item["pk"], item["sk"])] = item
@@ -134,3 +134,44 @@ def test_expense_updates_budget_atomically_and_is_idempotent(monkeypatch):
     assert len(fake.transactions[0]) == 2
     assert fake.items[("TENANT#t1", "ITEM#b1")]["spent"] == 10
     assert first == second
+
+
+def test_expense_idempotency_matches_decimal_amount(monkeypatch):
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    class TransactionTable:
+        name = "budget-test"
+
+        def __init__(self):
+            self.items = {
+                ("TENANT#t1", "ITEM#b1"): {"pk": "TENANT#t1", "sk": "ITEM#b1", "id": "b1", "entityType": "Budget", "projectId": "p1", "allocated": Decimal("100"), "spent": Decimal("0"), "balance": Decimal("100")}
+            }
+            self.transactions = []
+            self.meta = SimpleNamespace(client=self)
+
+        def get_item(self, Key):
+            item = self.items.get((Key["pk"], Key["sk"]))
+            return {"Item": item} if item else {}
+
+        def transact_write_items(self, TransactItems):
+            self.transactions.append(TransactItems)
+            item = dict(TransactItems[0]["Put"]["Item"])
+            assert isinstance(item["amount"], Decimal)
+            update = TransactItems[1]["Update"]
+            budget = self.items[(update["Key"]["pk"], update["Key"]["sk"])]
+            amount = update["ExpressionAttributeValues"][":amount"]
+            budget["spent"] += amount
+            budget["balance"] = budget["allocated"] - budget["spent"]
+            self.items[(item["pk"], item["sk"])] = item
+
+    fake = TransactionTable()
+    monkeypatch.setattr(app, "table", fake)
+    monkeypatch.setattr(app, "assert_project_reference", lambda project_id, authorization: None)
+    body = app.ExpenseIn(budgetId="b1", projectId="p1", amount=10.4, description="license", idempotencyKey="request-0004")
+    actor = {"tenantId": "t1", "userId": "u1", "role": "MANAGER"}
+    first = app.expense(body, "Bearer local", actor)
+    second = app.expense(body, "Bearer local", actor)
+    assert len(fake.transactions) == 1
+    assert first["id"] == second["id"]
+    assert app.dynamo_safe(first) == app.dynamo_safe(second)

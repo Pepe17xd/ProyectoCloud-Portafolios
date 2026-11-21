@@ -380,7 +380,7 @@ def _collect_decision_data(authorization: str, tenant_id: str):
     }
     result = {"priorities": []}
     truncated = []
-    with ThreadPoolExecutor(max_workers=len(sources)) as executor:
+    with ThreadPoolExecutor(max_workers=min(2, len(sources))) as executor:
         requests = {executor.submit(_fetch_pages, base, path, authorization): name for name, (base, path) in sources.items()}
         for future in as_completed(requests):
             name = requests[future]

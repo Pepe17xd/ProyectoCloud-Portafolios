@@ -189,7 +189,11 @@ def cursor_decode(c):
 def query_all_tenant(tenant: str):
     rows, cursor = [], None
     while True:
-        args = {"KeyConditionExpression": "pk = :pk", "ExpressionAttributeValues": {":pk": f"TENANT#{tenant}"}}
+        args = {
+            "KeyConditionExpression": "pk = :pk",
+            "ExpressionAttributeValues": {":pk": f"TENANT#{tenant}"},
+            "ConsistentRead": True,
+        }
         if cursor:
             args["ExclusiveStartKey"] = cursor
         page = table.query(**args)
@@ -286,27 +290,26 @@ def assign(body: AssignmentIn, authorization: str | None = Header(None), a=__imp
     if body.idempotencyKey:
         previous = table.get_item(Key=assignment_key).get("Item")
         if previous:
-            if all(previous.get(k) == getattr(body, k) for k in ("resourceId", "projectId", "allocation", "startDate", "endDate")):
+            if all(dynamo_safe(previous.get(k)) == dynamo_safe(getattr(body, k)) for k in ("resourceId", "projectId", "allocation", "startDate", "endDate")):
                 return previous
             raise HTTPException(409, "Idempotency key was already used for a different assignment")
     doc = {**assignment_key, "id": ident, "entityType": "Assignment", **body.model_dump(exclude={"idempotencyKey"}), "createdAt": now()}
-    from boto3.dynamodb.types import TypeSerializer
-
-    serializer = TypeSerializer()
-    serialize = lambda value: {k: serializer.serialize(v) for k, v in value.items()}
     try:
         table.meta.client.transact_write_items(
             TransactItems=[
-                {"Put": {"TableName": table.name, "Item": serialize(dynamo_safe(doc)), "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"}},
-                {"Update": {"TableName": table.name, "Key": serialize({"pk": resource["pk"], "sk": resource["sk"]}), "UpdateExpression": "SET #remaining = #remaining - :allocation ADD #allocated :allocation", "ConditionExpression": "attribute_exists(pk) AND #remaining >= :allocation", "ExpressionAttributeNames": {"#remaining": "remainingCapacity", "#allocated": "allocated"}, "ExpressionAttributeValues": serialize({":allocation": Decimal(str(body.allocation))})}},
+                {"Put": {"TableName": table.name, "Item": dynamo_safe(doc), "ConditionExpression": "attribute_not_exists(pk) AND attribute_not_exists(sk)"}},
+                {"Update": {"TableName": table.name, "Key": {"pk": resource["pk"], "sk": resource["sk"]}, "UpdateExpression": "SET #remaining = #remaining - :allocation ADD #allocated :allocation", "ConditionExpression": "attribute_exists(pk) AND #remaining >= :allocation", "ExpressionAttributeNames": {"#remaining": "remainingCapacity", "#allocated": "allocated"}, "ExpressionAttributeValues": {":allocation": Decimal(str(body.allocation))}}},
             ]
         )
     except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "TransactionCanceledException":
+        code = exc.response.get("Error", {}).get("Code")
+        if code == "TransactionCanceledException":
             previous = table.get_item(Key=assignment_key).get("Item") if body.idempotencyKey else None
-            if previous and all(previous.get(k) == getattr(body, k) for k in ("resourceId", "projectId", "allocation", "startDate", "endDate")):
+            if previous and all(dynamo_safe(previous.get(k)) == dynamo_safe(getattr(body, k)) for k in ("resourceId", "projectId", "allocation", "startDate", "endDate")):
                 return previous
             raise HTTPException(409, "Resource capacity exceeded or assignment conflict") from exc
+        logging.error("Assignment DynamoDB transaction failed (%s): %s", code, exc)
+        raise
     if os.getenv("DOMAIN_TOPIC_ARN"):
         boto3.client(
             "sns",
@@ -352,14 +355,17 @@ def assignments(projectId: str | None = None, limit: int = Query(50, ge=1, le=10
 def availability(a=__import__("fastapi").Depends(actor)):
     rows = query_all_tenant(a["tenantId"])
     resources = [x for x in rows if "name" in x and "capacity" in x]
-    alloc = {
-        r["sk"]: sum(
+    assignments = [x for x in rows if x.get("entityType") == "Assignment"]
+    alloc = {}
+    for r in resources:
+        sk = str(r.get("sk", ""))
+        stripped = sk[5:] if sk.startswith("ITEM#") else sk
+        rid_candidates = {v for v in (r.get("id"), r.get("sk"), stripped) if v}
+        alloc[r["sk"]] = sum(
             float(x.get("allocation", 0))
-            for x in rows
-            if x.get("entityType") == "Assignment" and x.get("resourceId") == r["sk"]
+            for x in assignments
+            if x.get("resourceId") in rid_candidates
         )
-        for r in resources
-    }
     return {
         "items": [
             {**r, "allocated": alloc[r["sk"]], "available": max(0, float(r["capacity"]) - alloc[r["sk"]])}
