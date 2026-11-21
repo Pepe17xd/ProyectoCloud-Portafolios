@@ -119,7 +119,7 @@ export async function joinCognitoOrganization(inviteCode: string, role = 'MANAGE
   if (!response.ok) {
     if (response.status === 401) throw Error('Tu sesión venció. Inicia sesión nuevamente y reintenta.');
     if (response.status === 404) throw Error('No encontramos una organización activa con ese código de invitación.');
-    if (response.status === 400) throw Error('Revisa el código de organización (ej. tenant-...) e inténtalo de nuevo.');
+    if (response.status === 400) throw Error('Revisa el código de invitación de la organización e inténtalo de nuevo.');
     if (response.status === 409) throw Error('Esta cuenta ya pertenece a una organización. Inicia sesión para continuar.');
     throw Error('Tuvimos un problema temporal al unirte a la organización. Puedes reintentar sin crear otra cuenta.');
   }

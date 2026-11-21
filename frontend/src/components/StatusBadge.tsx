@@ -1,4 +1,5 @@
 import React from 'react';
+import { formatUserDisplayName, isOpaqueId } from '../utils/display';
 
 type BadgeVariant = 'emerald' | 'sky' | 'amber' | 'rose' | 'indigo' | 'slate';
 
@@ -15,20 +16,27 @@ const STATUS_MAP: Record<string, { label: string; variant: BadgeVariant }> = {
   COMPLETED: { label: 'Completado', variant: 'emerald' },
   COMPLETE: { label: 'Completado', variant: 'emerald' },
   DONE: { label: 'Completado', variant: 'emerald' },
+  SUCCEEDED: { label: 'Completado', variant: 'emerald' },
+  SUCCESS: { label: 'Completado', variant: 'emerald' },
   BLOCKED: { label: 'Bloqueado', variant: 'rose' },
+  FAILED: { label: 'Con error', variant: 'rose' },
   ON_HOLD: { label: 'En pausa', variant: 'amber' },
   PAUSED: { label: 'Pausado', variant: 'amber' },
+  PENDING: { label: 'Pendiente', variant: 'amber' },
   PENDING_REVIEW: { label: 'En revisión', variant: 'amber' },
+  DRAFT: { label: 'Borrador', variant: 'slate' },
+  INACTIVE: { label: 'Inactivo', variant: 'slate' },
   SCHEDULED: { label: 'Programado', variant: 'sky' },
   CANCELLED: { label: 'Cancelado', variant: 'rose' },
   REVOKED: { label: 'Revocado', variant: 'rose' },
   AVAILABLE: { label: 'Disponible', variant: 'emerald' },
   ASSIGNED: { label: 'Asignado', variant: 'sky' },
   OVERALLOCATED: { label: 'Sobreasignado', variant: 'rose' },
-  ADMIN: { label: 'Admin', variant: 'indigo' },
-  PM: { label: 'Project Manager', variant: 'sky' },
+  ADMIN: { label: 'Administrador', variant: 'indigo' },
+  MANAGER: { label: 'Gestor', variant: 'sky' },
+  PM: { label: 'Gestor de proyecto', variant: 'sky' },
   MEMBER: { label: 'Miembro', variant: 'emerald' },
-  VIEWER: { label: 'Lectura', variant: 'slate' },
+  VIEWER: { label: 'Solo lectura', variant: 'slate' },
 };
 
 export function StatusBadge({ value }: { value: unknown }) {
@@ -68,8 +76,10 @@ const AVATAR_COLORS = [
 ];
 
 export function UserAvatar({ name, size = 26 }: { name: unknown; size?: number }) {
-  const text = typeof name === 'string' && name.trim() ? name.trim() : '—';
-  if (text === '—') return <span className="muted-cell">—</span>;
+  const raw = typeof name === 'string' && name.trim() ? name.trim() : '';
+  if (!raw) return <span className="muted-cell">—</span>;
+  if (isOpaqueId(raw)) return <span className="muted-cell">Sin asignar</span>;
+  const text = raw.includes('@') ? formatUserDisplayName({ email: raw }) : raw;
   const clean = text.replace(/^(user-|usr-|res-|own-)/i, '');
   const initials = clean
     .split(/[\s@._-]+/)

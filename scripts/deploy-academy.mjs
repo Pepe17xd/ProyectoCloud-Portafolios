@@ -101,23 +101,27 @@ export async function orchestrate(io, options = {}) {
     io.log(`Preflight de solo lectura: cuenta ${caller.Account}, región ${region}, rol ${role.RoleName}; notificaciones por correo (SNS): ${mode === 'sns-email' ? 'habilitadas' : 'deshabilitadas'}; alertas operativas: ${env.OPS_ALERT_EMAIL ? 'con suscripción de correo' : 'sin correo (solo tema SNS)'}. No se desplegó ni escribió ningún recurso.`);
     return { account: caller.Account, region, role: role.Arn, notifications: mode };
   }
-  deploy('auth', true);
+  if (!options.frontendOnly) deploy('auth', true);
   const auth = outputs('auth');
   env.COGNITO_USER_POOL_ID = requiredOutput(auth, 'UserPoolId', 'auth');
   env.COGNITO_CLIENT_ID = requiredOutput(auth, 'UserPoolClientId', 'auth');
-  deploy('storage', true); env.DOCUMENTS_BUCKET = requiredOutput(outputs('storage'), 'BucketName', 'storage');
-  deploy('events', true); const events = outputs('events');
-  env.DOMAIN_TOPIC_ARN = requiredOutput(events, 'DomainTopicArn', 'events'); env.BUDGET_QUEUE_ARN = requiredOutput(events, 'BudgetQueueArn', 'events');
-  env.NOTIFICATION_QUEUE_ARN = requiredOutput(events, 'NotificationQueueArn', 'events'); env.EMAIL_TOPIC_ARN = requiredOutput(events, 'EmailTopicArn', 'events');
+  if (!options.frontendOnly) {
+    deploy('storage', true); env.DOCUMENTS_BUCKET = requiredOutput(outputs('storage'), 'BucketName', 'storage');
+    deploy('events', true); const events = outputs('events');
+    env.DOMAIN_TOPIC_ARN = requiredOutput(events, 'DomainTopicArn', 'events'); env.BUDGET_QUEUE_ARN = requiredOutput(events, 'BudgetQueueArn', 'events');
+    env.NOTIFICATION_QUEUE_ARN = requiredOutput(events, 'NotificationQueueArn', 'events'); env.EMAIL_TOPIC_ARN = requiredOutput(events, 'EmailTopicArn', 'events');
+  }
   const urls = {};
   for (const name of services) {
-    deploy(name);
+    if (!options.frontendOnly) deploy(name);
     const o = outputs(name); const url = o.HttpApiUrl;
     if (!url || !/^https:\/\//.test(url)) throw new Error(`Missing HttpApiUrl output for ${name}`);
     urls[name] = url.replace(/\/$/, ''); env[`${name.toUpperCase()}_API_URL`] = urls[name];
   }
-  // Identity and Project are the only services deployed before all references exist.
-  deploy('identity'); deploy('project');
+  if (!options.frontendOnly) {
+    // Identity and Project are the only services deployed before all references exist.
+    deploy('identity'); deploy('project');
+  }
   for (const key of Object.keys(env)) if (key.startsWith('VITE_')) delete env[key];
   const vite = { VITE_AUTH_MODE: 'cognito', VITE_AWS_REGION: region, VITE_COGNITO_USER_POOL_ID: env.COGNITO_USER_POOL_ID, VITE_COGNITO_CLIENT_ID: env.COGNITO_CLIENT_ID };
   for (const name of services) vite[`VITE_API_${name.toUpperCase()}`] = urls[name];
@@ -150,21 +154,26 @@ export async function orchestrate(io, options = {}) {
     io.log(`Amplify: ${frontend}
 APIs: ${JSON.stringify(urls)}
 Correo (SNS): ${mode === 'sns-email' ? 'habilitado; cada usuario confirma su suscripción desde Notificaciones' : 'deshabilitado'}
-Stacks: auth, storage, events, ${services.join(', ')}. Verificación real de CRUD y aislamiento pendiente.`);
+${options.frontendOnly
+  ? `Modo: solo frontend (stacks backend reutilizados: auth, ${services.join(', ')})`
+  : `Stacks: auth, storage, events, ${services.join(', ')}. Verificación real de CRUD y aislamiento pendiente.`}`);
     return { account: caller.Account, urls, frontend, appId: app.appId, notifications: mode };
   } finally { io.cleanup(); }
 }
-function preflight() {
+function preflight(mode = 'deploy') {
   if (Number(process.versions.node.split('.')[0]) < 20) throw new Error('Node.js 20 or later required');
   const cleanEnv = process.env;
-  command(npm, ['--version'], { env: cleanEnv }); command(python, ['--version'], { env: cleanEnv }); command('docker', ['--version'], { env: cleanEnv }); command('docker', ['info'], { env: cleanEnv }); command('aws', ['--version'], { env: cleanEnv }); command(npx, ['--no-install', 'serverless', '--version'], { env: cleanEnv });
+  command(npm, ['--version'], { env: cleanEnv }); command(python, ['--version'], { env: cleanEnv }); command('aws', ['--version'], { env: cleanEnv });
+  if (mode !== 'frontend') {
+    command('docker', ['--version'], { env: cleanEnv }); command('docker', ['info'], { env: cleanEnv }); command(npx, ['--no-install', 'serverless', '--version'], { env: cleanEnv });
+  }
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const mode = process.argv[2] || 'check'; if (!['check', 'deploy', 'verify'].includes(mode)) throw new Error('Usage: check|deploy|verify');
+    const mode = process.argv[2] || 'check'; if (!['check', 'deploy', 'frontend', 'verify'].includes(mode)) throw new Error('Usage: check|deploy|frontend|verify');
     loadAcademyEnv(); validateCredentialEnvironment(process.env);
-    preflight(); const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION;
+    preflight(mode); const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION;
     const io = createRealIO(region);
-    await orchestrate(io, { region, stage: process.env.AWS_STAGE, account: process.env.AWS_ACADEMY_ALLOWED_ACCOUNT, role: process.env.LAB_ROLE_ARN, appName: process.env.AMPLIFY_APP_NAME, branch: process.env.AMPLIFY_BRANCH, checkOnly: mode !== 'deploy' });
+    await orchestrate(io, { region, stage: process.env.AWS_STAGE, account: process.env.AWS_ACADEMY_ALLOWED_ACCOUNT, role: process.env.LAB_ROLE_ARN, appName: process.env.AMPLIFY_APP_NAME, branch: process.env.AMPLIFY_BRANCH, checkOnly: mode === 'check' || mode === 'verify', frontendOnly: mode === 'frontend' });
   } catch (error) { console.error(`Despliegue detenido: ${error.message}`); process.exitCode = 1; }
 }

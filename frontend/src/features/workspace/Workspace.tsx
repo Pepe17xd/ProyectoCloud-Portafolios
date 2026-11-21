@@ -6,6 +6,16 @@ import TopNav from './TopNav';
 import PageHeader from '../../components/PageHeader';
 import Modal from '../../components/Modal';
 import { formatCurrency, formatDate, isDateOverdue, StatusBadge, UserAvatar } from '../../components/StatusBadge';
+import {
+  formatAlertEventLabel,
+  formatFileSize,
+  formatFileTypeBadge,
+  formatFlowFrequency,
+  formatFlowType,
+  formatResourceType,
+  formatTaskStatus,
+  isOpaqueId,
+} from '../../utils/display';
 import { navigate, usePathname } from '../../hooks/navigation';
 import '../../style.css';
 import './workspace-premium.css';
@@ -54,19 +64,29 @@ const fieldLabels: Record<string, string> = {
 const fieldLabel = (field: string) => fieldLabels[field] || field;
 function itemId(item: Item) { return typeof item.sk === 'string' ? item.sk.replace(/^ITEM#/, '') : String(item.id || ''); }
 function readable(value: unknown) { return value === undefined || value === null || value === '' ? '—' : String(value); }
+function valueEmpty(value: unknown) { return value === undefined || value === null || value === ''; }
 
 function renderFormattedCell(field: string, row: Item, entityNames: Record<string, string> = {}) {
   const val = row[field];
-  if (val === undefined || val === null || val === '') return <span className="muted-cell">—</span>;
+  if (val === undefined || val === null || valueEmpty(val)) return <span className="muted-cell">—</span>;
   if (field === 'status' || field === 'role') {
     return <StatusBadge value={val} />;
   }
+  if (field === 'type') {
+    return formatResourceType(val);
+  }
+  if (field === 'name') {
+    return <strong>{readable(val)}</strong>;
+  }
   if (field === 'ownerId' || field === 'resourceId' || field === 'assigneeId') {
-    const resolved = entityNames[String(val)] || val;
-    return <UserAvatar name={resolved} />;
+    const resolved = entityNames[String(val)];
+    if (!resolved && isOpaqueId(val)) return <span className="muted-cell">Sin asignar</span>;
+    return <UserAvatar name={resolved || val} />;
   }
   if (field === 'portfolioId' || field === 'projectId') {
-    return <strong>{entityNames[String(val)] || readable(val)}</strong>;
+    const resolved = entityNames[String(val)];
+    if (!resolved && isOpaqueId(val)) return <span className="muted-cell">Sin vincular</span>;
+    return <strong>{resolved || readable(val)}</strong>;
   }
   if (field === 'allocated' && row.spent !== undefined) {
     const allocatedNum = Number(val);
@@ -161,7 +181,59 @@ function CopyIdBadge({ id, full = false }: { id: string; full?: boolean }) {
   );
 }
 
+const PAGE_SIZE = 10;
+
+function PaginationBar({
+  page,
+  totalItems,
+  pageSize = PAGE_SIZE,
+  onPageChange,
+  hasMore = false,
+  busy = false,
+  onLoadMore,
+}: {
+  page: number;
+  totalItems: number;
+  pageSize?: number;
+  onPageChange: (next: number) => void;
+  hasMore?: boolean;
+  busy?: boolean;
+  onLoadMore?: () => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  if (totalItems <= pageSize && !hasMore) return null;
+  const start = totalItems ? (page - 1) * pageSize + 1 : 0;
+  const end = Math.min(totalItems, page * pageSize);
+  return (
+    <div className="pagination-bar">
+      <span className="pagination-info">
+        Mostrando {start}–{end} de {totalItems} · Página {page} de {totalPages}
+      </span>
+      <div className="pagination-actions">
+        <button type="button" className="secondary" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
+          Anterior
+        </button>
+        <button type="button" className="secondary" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>
+          Siguiente
+        </button>
+        {hasMore && onLoadMore && (
+          <button type="button" className="secondary" disabled={busy} onClick={onLoadMore}>
+            {busy ? 'Cargando…' : 'Cargar más'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DataTable({ title, rows, fields, entityNames = {} }: { title: string; rows: Item[]; fields: string[]; entityNames?: Record<string, string> }) {
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+  const pagedRows = useMemo(() => rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE), [rows, page]);
+
   return (
     <section className="panel">
       <div className="panelHeading">
@@ -176,7 +248,7 @@ function DataTable({ title, rows, fields, entityNames = {} }: { title: string; r
             <tr>{fields.map(f => <th key={f}>{fieldLabel(f)}</th>)}</tr>
           </thead>
           <tbody>
-            {rows.map((row, i) => (
+            {pagedRows.map((row, i) => (
               <tr key={itemId(row) || i}>
                 {fields.map(f => <td key={f}>{renderFormattedCell(f, row, entityNames)}</td>)}
               </tr>
@@ -185,6 +257,7 @@ function DataTable({ title, rows, fields, entityNames = {} }: { title: string; r
         </table>
         {!rows.length && <div className="empty">No hay registros todavía.</div>}
       </div>
+      <PaginationBar page={page} totalItems={rows.length} onPageChange={setPage} />
     </section>
   );
 }
@@ -203,17 +276,17 @@ function NotificationCenter() {
   async function revokeEmail() { setBusy(true); try { await request('identity','notifications/email','DELETE'); await load(); setMessage('Consentimiento revocado y suscripción de correo cancelada.'); } catch(e) { setMessage(e instanceof Error?e.message:String(e)); } finally { setBusy(false); } }
   async function saveEmailPreferences(e:React.FormEvent) { e.preventDefault(); setBusy(true); try { await request('identity','notifications/email/preferences','PUT',{alertTypes:emailChannel.alertTypes||[]}); await load(); setMessage('Preferencias de correo guardadas.'); } catch(e) { setMessage(e instanceof Error?e.message:String(e)); } finally { setBusy(false); } }
   const statusLabels:Record<string,string> = { unavailable:'Canal de correo no disponible', 'not-configured':'Sin configurar','pending-confirmation':'Confirmación pendiente en tu bandeja',active:'Activo',revoked:'Desactivado' };
-  const deliveryLabels:Record<string,string> = { REQUESTED:'Solicitado',SENT_TO_SNS:'Enviado por Amazon SNS',SIMULATED_LOCAL:'Simulado localmente',FAILED:'Fallido',BLOCKED:'Bloqueado',UNAVAILABLE:'No disponible' };
-  return <section className="panel notification-panel"><div className="panelHeading"><div><h2>Notificaciones</h2><span>El buzón interno sigue disponible de forma independiente al correo electrónico.</span></div><span className="mode-chip">{emailChannel.providerAvailable?(statusLabels[emailChannel.status]||emailChannel.status):'Correo no disponible'}</span></div><form className="notification-form" onSubmit={save}><label className="check-label"><input type="checkbox" checked={Boolean(prefs.enabled)} onChange={e=>setPrefs({...prefs,enabled:e.target.checked})}/> Activar alertas en el buzón interno</label><div className="notification-options"><label>Zona horaria<input value={prefs.timezone||'America/Lima'} onChange={e=>setPrefs({...prefs,timezone:e.target.value})}/></label><label>Horario desde<input type="time" value={prefs.allowedHours?.start||'08:00'} onChange={e=>setPrefs({...prefs,allowedHours:{...prefs.allowedHours,start:e.target.value}})}/></label><label>Hasta<input type="time" value={prefs.allowedHours?.end||'18:00'} onChange={e=>setPrefs({...prefs,allowedHours:{...prefs.allowedHours,end:e.target.value}})}/></label></div><fieldset><legend>Eventos para el buzón interno</legend><div className="notification-types">{types.map(type=><label className="check-label" key={type}><input type="checkbox" checked={(prefs.alertTypes||[]).includes(type)} onChange={e=>setPrefs({...prefs,alertTypes:e.target.checked?[...new Set([...(prefs.alertTypes||[]),type])]:prefs.alertTypes.filter((x:string)=>x!==type)})}/>{type}</label>)}</div></fieldset><button className="secondary" disabled={busy}>Guardar preferencias</button></form><div className="notification-email"><div className="email-intro"><span className="email-label">CANAL DE CORREO (AMAZON SNS)</span><h3>Recibe recordatorios y alertas por correo electrónico</h3><p>Elige qué avisos quieres recibir en el correo de tu perfil y mantén el control de tu suscripción.</p></div><div className="email-status-grid" aria-label="Estado del canal de correo"><div><span>Disponibilidad</span><strong>{emailChannel.providerAvailable ? 'Amazon SNS activo' : 'No disponible'}</strong></div><div><span>Consentimiento</span><strong>{emailChannel.consent ? 'Aceptado' : 'No otorgado'}</strong></div><div><span>Suscripción</span><strong>{emailChannel.status === 'active' ? 'Confirmada' : emailChannel.status === 'pending-confirmation' ? 'Pendiente de confirmar' : 'Sin activar'}</strong></div><div><span>Correo destino</span><strong>{emailChannel.email || 'Correo de tu cuenta'}</strong></div></div><p>{emailChannel.providerAvailable?'Al activarlo, Amazon SNS enviará un correo de confirmación al email de tu perfil.':'El canal requiere que el modo de notificaciones esté activo. El buzón interno no depende de esta configuración.'}</p>{!emailChannel.providerAvailable?<p role="status">El canal de correo todavía no está disponible. Puedes seguir usando las notificaciones internas.</p>:<><form className="notification-form" onSubmit={saveEmailPreferences}><div className="notification-options"><label className="check-label"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)} disabled={['active','pending-confirmation'].includes(emailChannel.status)}/> Acepto recibir recordatorios y alertas por correo electrónico. Puedo cancelar la suscripción cuando quiera.</label></div>{!['active','pending-confirmation'].includes(emailChannel.status)&&<button className="secondary" type="button" disabled={busy||!consent} onClick={()=>void subscribeEmail()}>Activar notificaciones por correo</button>}{emailChannel.status==='pending-confirmation'&&<p role="status">Revisa tu bandeja de entrada y haz clic en Confirm subscription en el correo enviado por Amazon SNS.</p>}{['active','pending-confirmation'].includes(emailChannel.status)&&<><fieldset><legend>Qué correos quieres recibir</legend><div className="notification-types">{emailTypes.map(type=><label className="check-label" key={type}><input type="checkbox" checked={(emailChannel.alertTypes||[]).includes(type)} onChange={e=>setEmailChannel({...emailChannel,alertTypes:e.target.checked?[...new Set([...(emailChannel.alertTypes||[]),type])]:emailChannel.alertTypes.filter((x:string)=>x!==type)})}/>{emailLabels[type]}</label>)}</div></fieldset><button className="secondary" disabled={busy}>Guardar tipos de correo</button></>}</form>{['active','pending-confirmation'].includes(emailChannel.status)&&<button className="textButton" disabled={busy} onClick={()=>void revokeEmail()}>Cancelar suscripción de correo</button>}</>}{message&&<p className="assistant-state" role="status">{message}</p>}<div className="notification-inbox"><h3>Últimos envíos por correo</h3>{emailChannel.items?.length?emailChannel.items.map((item:any)=><article key={item.eventId||item.id}><b>{item.title||item.eventType}</b><span>{deliveryLabels[item.deliveryStatus]||item.deliveryStatus}</span></article>):<p>Aún no hay mensajes enviados por este canal.</p>}</div></div><div className="notification-inbox"><h3>Buzón interno</h3>{inbox.length?inbox.slice(0,8).map((item:any)=><article key={item.eventId}><b>{item.title}</b><span>{item.createdAt}</span></article>):<p>No hay notificaciones para esta cuenta.</p>}</div></section>;
+  const deliveryLabels:Record<string,string> = { REQUESTED:'Solicitado',SENT_TO_SNS:'Enviado',SIMULATED_LOCAL:'Registrado',FAILED:'No entregado',BLOCKED:'Pausado',UNAVAILABLE:'No disponible' };
+  return <section className="panel notification-panel"><div className="panelHeading"><div><h2>Notificaciones</h2><span>El buzón interno sigue disponible de forma independiente al correo electrónico.</span></div><span className="mode-chip">{emailChannel.providerAvailable?(statusLabels[emailChannel.status]||emailChannel.status):'Correo no disponible'}</span></div><form className="notification-form" onSubmit={save}><label className="check-label"><input type="checkbox" checked={Boolean(prefs.enabled)} onChange={e=>setPrefs({...prefs,enabled:e.target.checked})}/> Activar alertas en el buzón interno</label><div className="notification-options"><label>Zona horaria<input value={prefs.timezone||'America/Lima'} onChange={e=>setPrefs({...prefs,timezone:e.target.value})}/></label><label>Horario desde<input type="time" value={prefs.allowedHours?.start||'08:00'} onChange={e=>setPrefs({...prefs,allowedHours:{...prefs.allowedHours,start:e.target.value}})}/></label><label>Hasta<input type="time" value={prefs.allowedHours?.end||'18:00'} onChange={e=>setPrefs({...prefs,allowedHours:{...prefs.allowedHours,end:e.target.value}})}/></label></div><fieldset><legend>Eventos para el buzón interno</legend><div className="notification-types">{types.map(type=><label className="check-label" key={type}><input type="checkbox" checked={(prefs.alertTypes||[]).includes(type)} onChange={e=>setPrefs({...prefs,alertTypes:e.target.checked?[...new Set([...(prefs.alertTypes||[]),type])]:prefs.alertTypes.filter((x:string)=>x!==type)})}/>{formatAlertEventLabel(type)}</label>)}</div></fieldset><button className="secondary" disabled={busy}>Guardar preferencias</button></form><div className="notification-email"><div className="email-intro"><span className="email-label">NOTIFICACIONES POR CORREO</span><h3>Recibe recordatorios y alertas por correo electrónico</h3><p>Elige qué avisos quieres recibir en el correo de tu perfil y mantén el control de tu suscripción.</p></div><div className="email-status-grid" aria-label="Estado del canal de correo"><div><span>Disponibilidad</span><strong>{emailChannel.providerAvailable ? 'Disponible' : 'No disponible'}</strong></div><div><span>Consentimiento</span><strong>{emailChannel.consent ? 'Aceptado' : 'No otorgado'}</strong></div><div><span>Suscripción</span><strong>{emailChannel.status === 'active' ? 'Confirmada' : emailChannel.status === 'pending-confirmation' ? 'Pendiente de confirmar' : 'Sin activar'}</strong></div><div><span>Correo destino</span><strong>{emailChannel.email || 'Correo de tu cuenta'}</strong></div></div><p>{emailChannel.providerAvailable?'Al activarlo, te enviaremos un correo de confirmación a tu dirección registrada.':'Este canal requiere activar las notificaciones por correo. El buzón interno funciona de forma independiente.'}</p>{!emailChannel.providerAvailable?<p role="status">El canal de correo todavía no está disponible. Puedes seguir usando las notificaciones internas.</p>:<><form className="notification-form" onSubmit={saveEmailPreferences}><div className="notification-options"><label className="check-label"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)} disabled={['active','pending-confirmation'].includes(emailChannel.status)}/> Acepto recibir recordatorios y alertas por correo electrónico. Puedo cancelar la suscripción cuando quiera.</label></div>{!['active','pending-confirmation'].includes(emailChannel.status)&&<button className="secondary" type="button" disabled={busy||!consent} onClick={()=>void subscribeEmail()}>Activar notificaciones por correo</button>}{emailChannel.status==='pending-confirmation'&&<p role="status">Revisa tu bandeja de entrada y confirma la suscripción desde el enlace del correo recibido.</p>}{['active','pending-confirmation'].includes(emailChannel.status)&&<><fieldset><legend>Qué correos quieres recibir</legend><div className="notification-types">{emailTypes.map(type=><label className="check-label" key={type}><input type="checkbox" checked={(emailChannel.alertTypes||[]).includes(type)} onChange={e=>setEmailChannel({...emailChannel,alertTypes:e.target.checked?[...new Set([...(emailChannel.alertTypes||[]),type])]:emailChannel.alertTypes.filter((x:string)=>x!==type)})}/>{emailLabels[type]}</label>)}</div></fieldset><button className="secondary" disabled={busy}>Guardar tipos de correo</button></>}</form>{['active','pending-confirmation'].includes(emailChannel.status)&&<button className="textButton" disabled={busy} onClick={()=>void revokeEmail()}>Cancelar suscripción de correo</button>}</>}{message&&<p className="assistant-state" role="status">{message}</p>}<div className="notification-inbox"><h3>Últimos envíos por correo</h3>{emailChannel.items?.length?emailChannel.items.map((item:any)=><article key={item.eventId||item.id}><b>{item.title||formatAlertEventLabel(item.eventType)}</b><span>{deliveryLabels[item.deliveryStatus]||item.deliveryStatus}</span></article>):<p>Aún no hay mensajes enviados por este canal.</p>}</div></div><div className="notification-inbox"><h3>Buzón interno</h3>{inbox.length?inbox.slice(0,8).map((item:any)=><article key={item.eventId}><b>{item.title}</b><span>{formatDate(item.createdAt)}</span></article>):<p>No hay notificaciones para esta cuenta.</p>}</div></section>;
 }
 
 function FlowPanel() {
   const [flows,setFlows]=useState<any[]>([]);const [runs,setRuns]=useState<any[]>([]);const [message,setMessage]=useState('');const [busy,setBusy]=useState(false);const [type,setType]=useState('weekly-summary');const [frequency,setFrequency]=useState('weekly');const [time,setTime]=useState('09:00');const [dayOfWeek,setDayOfWeek]=useState(1);
   const load=useCallback(async()=>{const data=await request<any>('identity','flows');setFlows(data.items||[]);},[]);useEffect(()=>{void load().catch(e=>setMessage(String(e)));},[load]);
-  async function create(e:React.FormEvent){e.preventDefault();setBusy(true);try{await request('identity','flows','POST',{type,frequency,time,dayOfWeek,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Lima'});await load();setMessage('Automatización guardada para tu tenant.');}catch(e){setMessage(String(e));}finally{setBusy(false);}}
-  async function run(flow:any){setBusy(true);try{const result=await request<any>('identity',`flows/${flow.id}/run`,'POST',{});const history=await request<any>('identity',`flows/${flow.id}/runs`);setRuns(history.items||[]);setMessage(`Ejecución ${result.executionId||'completada'} · entrega ${result.deliveryStatus||'SIMULATED'}`);await load();}catch(e){setMessage(String(e));}finally{setBusy(false);}}
+  async function create(e:React.FormEvent){e.preventDefault();setBusy(true);try{await request('identity','flows','POST',{type,frequency,time,dayOfWeek,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Lima'});await load();setMessage('Automatización guardada.');}catch(e){setMessage(String(e));}finally{setBusy(false);}}
+  async function run(flow:any){setBusy(true);try{await request<any>('identity',`flows/${flow.id}/run`,'POST',{});const history=await request<any>('identity',`flows/${flow.id}/runs`);setRuns(history.items||[]);setMessage('Ejecución completada.');await load();}catch(e){setMessage(String(e));}finally{setBusy(false);}}
   async function toggle(flow:any){setBusy(true);try{await request('identity',`flows/${flow.id}`,'PATCH',{enabled:!flow.enabled});await load();}catch(e){setMessage(String(e));}finally{setBusy(false);}}
-  return <section className="panel flow-panel"><div className="panelHeading"><div><h2>Automatizaciones</h2><span>Reglas deterministas sobre APIs de tu organización; entregas locales simuladas.</span></div><span className="mode-chip">SIN LLM · SIN ENVÍO EXTERNO</span></div><form className="assistant-form" onSubmit={create}><label className="sr-only" htmlFor="flow-type">Tipo de automatización</label><select id="flow-type" value={type} onChange={e=>setType(e.target.value)}><option value="weekly-summary">Resumen semanal</option><option value="reminder">Recordatorios</option><option value="risk-alert">Alertas de riesgo</option></select><label className="sr-only" htmlFor="flow-frequency">Cuando repetir</label><select id="flow-frequency" value={frequency} onChange={e=>setFrequency(e.target.value)}><option value="weekly">Semanal</option><option value="daily">Diaria</option></select><label className="sr-only" htmlFor="flow-time">Hora local</label><input id="flow-time" type="time" value={time} onChange={e=>setTime(e.target.value)} disabled={frequency==="manual"}/>{frequency==="weekly"&&<><label className="sr-only" htmlFor="flow-day">Día semanal</label><select id="flow-day" value={dayOfWeek} onChange={e=>setDayOfWeek(Number(e.target.value))}><option value={0}>Domingo</option><option value={1}>Lunes</option><option value={2}>Martes</option><option value={3}>Miércoles</option><option value={4}>Jueves</option><option value={5}>Viernes</option><option value={6}>Sábado</option></select></>}<button className="primary" disabled={busy}>{busy?'Guardando…':'Crear automatización'}</button></form>{message&&<p role="status" className="assistant-state">{message}</p>}<div className="orbital-reminder-list">{flows.length?flows.map(flow=><article key={flow.id}><div><b>{flow.name}</b><span>{flow.type} · {flow.frequency} · {flow.enabled?'Activa':'Pausada'} · próxima {flow.nextRunAt?new Date(flow.nextRunAt).toLocaleString(): 'manual'} · última {flow.lastRunAt?new Date(flow.lastRunAt).toLocaleString():'—'}</span></div><button className="textButton" disabled={busy} onClick={()=>void run(flow)}>Ejecutar ahora</button><button className="textButton" disabled={busy} onClick={()=>void toggle(flow)}>{flow.enabled?'Pausar':'Activar'}</button><button className="textButton" disabled={busy} onClick={async()=>{const d=await request<any>('identity',`flows/${flow.id}/runs`);setRuns(d.items||[]);}}>Historial</button></article>):<p>No hay automatizaciones configuradas.</p>}</div>{runs.map(run=><details key={run.executionId}><summary>{run.status} · {run.createdAt}</summary><pre>{JSON.stringify(run.report||run.errors||{},null,2)}</pre></details>)}</section>;
+  return <section className="panel flow-panel"><div className="panelHeading"><div><h2>Automatizaciones</h2><span>Programa resúmenes y recordatorios automáticos para tu organización.</span></div><span className="mode-chip">SEGUIMIENTO PROGRAMADO</span></div><form className="assistant-form" onSubmit={create}><label className="sr-only" htmlFor="flow-type">Tipo de automatización</label><select id="flow-type" value={type} onChange={e=>setType(e.target.value)}><option value="weekly-summary">Resumen semanal</option><option value="reminder">Recordatorios</option><option value="risk-alert">Alertas de riesgo</option></select><label className="sr-only" htmlFor="flow-frequency">Cuando repetir</label><select id="flow-frequency" value={frequency} onChange={e=>setFrequency(e.target.value)}><option value="weekly">Semanal</option><option value="daily">Diaria</option></select><label className="sr-only" htmlFor="flow-time">Hora local</label><input id="flow-time" type="time" value={time} onChange={e=>setTime(e.target.value)} disabled={frequency==="manual"}/>{frequency==="weekly"&&<><label className="sr-only" htmlFor="flow-day">Día semanal</label><select id="flow-day" value={dayOfWeek} onChange={e=>setDayOfWeek(Number(e.target.value))}><option value={0}>Domingo</option><option value={1}>Lunes</option><option value={2}>Martes</option><option value={3}>Miércoles</option><option value={4}>Jueves</option><option value={5}>Viernes</option><option value={6}>Sábado</option></select></>}<button className="primary" disabled={busy}>{busy?'Guardando…':'Crear automatización'}</button></form>{message&&<p role="status" className="assistant-state">{message}</p>}<div className="orbital-reminder-list">{flows.length?flows.map(flow=><article key={flow.id}><div><b>{flow.name}</b><span>{formatFlowType(flow.type)} · {formatFlowFrequency(flow.frequency)} · {flow.enabled?'Activa':'Pausada'} · próxima {flow.nextRunAt?formatDate(flow.nextRunAt):'manual'} · última {flow.lastRunAt?formatDate(flow.lastRunAt):'—'}</span></div><button className="textButton" disabled={busy} onClick={()=>void run(flow)}>Ejecutar ahora</button><button className="textButton" disabled={busy} onClick={()=>void toggle(flow)}>{flow.enabled?'Pausar':'Activar'}</button><button className="textButton" disabled={busy} onClick={async()=>{const d=await request<any>('identity',`flows/${flow.id}/runs`);setRuns(d.items||[]);}}>Historial</button></article>):<p>No hay automatizaciones configuradas.</p>}</div>{runs.map(run=><details key={run.executionId}><summary><StatusBadge value={run.status} /> <span>{formatDate(run.createdAt)}</span></summary><pre>{JSON.stringify(run.report||run.errors||{},null,2)}</pre></details>)}</section>;
 }
 
 function ReportsPanel() {
@@ -222,26 +295,164 @@ function ReportsPanel() {
   const load = useCallback(async()=>{const data=await request<any>('project','intelligence/reports');setReports(data.items||[]);},[]);
   useEffect(()=>{void load().catch(e=>setMessage(e instanceof Error?e.message:String(e)));},[load]);
   async function download(id:string) { const data=await request<any>('project',`intelligence/reports/${encodeURIComponent(id)}`); const report=data.report; const blob=new Blob([report.csv],{type:report.mediaType}); const url=URL.createObjectURL(blob); const link=document.createElement('a');link.href=url;link.download=report.fileName;link.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000); }
-  async function generate(e:React.FormEvent){e.preventDefault();setBusy(true);setMessage('');try{const data=await request<any>('project','intelligence/reports','POST',{type});setMessage(`${data.report.rows.length} filas. Alcance: hasta 1 000 resultados por servicio${data.report.scope.truncated?.length ? ' (truncado)' : ''}${data.report.unavailable?.length ? '; algunos servicios no disponibles' : ''}.`);await load();await download(data.report.id);}catch(e){setMessage(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
-  return <section className="panel report-panel"><div className="panelHeading"><div><h2><BarChart3 size={18}/> Reportes</h2><span>Consultas tenant-scoped a servicios de dominio; cada reporte persiste su alcance y filas.</span></div><span className="mode-chip">CSV</span></div><form className="assistant-form" onSubmit={generate}><label className="sr-only" htmlFor="report-type">Tipo de reporte</label><select id="report-type" value={type} onChange={e=>setType(e.target.value)}>{Object.entries(types).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select><button className="primary" disabled={busy}>{busy?'Generando…':'Generar CSV'}</button></form>{message&&<p className="assistant-state" role="status">{message}</p>}<div className="orbital-reminder-list"><h3>Historial persistido</h3>{reports.map(report=><article key={report.id}><div><b>{types[report.type]||report.type}</b><span>{report.generatedAt} · {report.scope?.partial?'alcance parcial':'alcance visible'}</span></div><button className="textButton" disabled={busy} onClick={()=>void download(report.id)}>Descargar CSV</button></article>)}{!reports.length&&<p>No se han generado reportes en esta organización.</p>}</div><small>Se recorren hasta 10 páginas (máximo 1 000 resultados por servicio); el reporte indica si el alcance quedó truncado. Los importes no se convierten entre monedas; aún no hay filtros personalizados ni PDF.</small></section>;
+  async function generate(e:React.FormEvent){e.preventDefault();setBusy(true);setMessage('');try{const data=await request<any>('project','intelligence/reports','POST',{type});setMessage(`${data.report.rows.length} filas generadas.${data.report.scope.truncated?.length ? ' Algunos resultados se limitaron al máximo permitido por área.' : ''}${data.report.unavailable?.length ? ' Algunos módulos no estuvieron disponibles temporalmente.' : ''}`);await load();await download(data.report.id);}catch(e){setMessage(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
+  return <section className="panel report-panel"><div className="panelHeading"><div><h2><BarChart3 size={18}/> Reportes</h2><span>Genera y descarga reportes consolidados de tu organización.</span></div><span className="mode-chip">CSV</span></div><form className="assistant-form" onSubmit={generate}><label className="sr-only" htmlFor="report-type">Tipo de reporte</label><select id="report-type" value={type} onChange={e=>setType(e.target.value)}>{Object.entries(types).map(([value,label])=><option key={value} value={value}>{label}</option>)}</select><button className="primary" disabled={busy}>{busy?'Generando…':'Generar CSV'}</button></form>{message&&<p className="assistant-state" role="status">{message}</p>}<div className="orbital-reminder-list"><h3>Historial de reportes</h3>{reports.map(report=><article key={report.id}><div><b>{types[report.type]||report.type}</b><span>{formatDate(report.generatedAt)} · {report.scope?.partial?'alcance parcial':'reporte completo'}</span></div><button className="textButton" disabled={busy} onClick={()=>void download(report.id)}>Descargar CSV</button></article>)}{!reports.length&&<p>No se han generado reportes en esta organización.</p>}</div><small>Cada reporte incluye hasta 1 000 registros por área. Los importes se muestran en su moneda original.</small></section>;
+}
+
+const ALLOWED_DOCUMENT_TYPES: Record<string, string> = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  txt: 'text/plain',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+
+function resolveDocumentContentType(file: File): string {
+  if (file.type && Object.values(ALLOWED_DOCUMENT_TYPES).includes(file.type)) return file.type;
+  const ext = file.name.split('.').pop()?.toLowerCase() || '';
+  return ALLOWED_DOCUMENT_TYPES[ext] || '';
+}
+
+function DocumentsPanel() {
+  const [projects, setProjects] = useState<Item[]>([]);
+  const [documents, setDocuments] = useState<Item[]>([]);
+  const [docPage, setDocPage] = useState(1);
+  const [projectId, setProjectId] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    const [projData, docData] = await Promise.all([
+      request<{ items: Item[] }>('project', 'projects'),
+      request<{ items: Item[] }>('project', 'documents'),
+    ]);
+    const projItems = projData.items || [];
+    setProjects(projItems);
+    setDocuments(docData.items || []);
+    setProjectId(prev => prev || (projItems[0] ? itemId(projItems[0]) : ''));
+  }, []);
+
+  useEffect(() => {
+    void load().catch(e => setError(e instanceof Error ? e.message : String(e)));
+  }, [load]);
+
+  async function upload(e: React.FormEvent) {
+    e.preventDefault();
+    if (!projectId) { setError('Selecciona un proyecto antes de subir un archivo.'); return; }
+    if (!file) { setError('Selecciona un archivo (PDF, PNG, JPG, TXT o DOCX).'); return; }
+    const contentType = resolveDocumentContentType(file);
+    if (!contentType) { setError('Tipo de archivo no permitido. Usa PDF, PNG, JPG, TXT o DOCX.'); return; }
+    if (file.size < 1 || file.size > 20 * 1024 * 1024) { setError('El archivo debe pesar entre 1 byte y 20 MB.'); return; }
+
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const created = await request<{ document: Item; uploadUrl: string }>('project', 'documents', 'POST', {
+        projectId,
+        fileName: file.name,
+        contentType,
+        contentLength: file.size,
+      });
+      const putRes = await fetch(created.uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': contentType },
+        body: file,
+      });
+      if (!putRes.ok) throw new Error('No se pudo subir el archivo. Inténtalo de nuevo.');
+      setFile(null);
+      const input = document.getElementById('s3-document-file') as HTMLInputElement | null;
+      if (input) input.value = '';
+      setMessage(`Archivo "${file.name}" guardado correctamente.`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function download(docId: string) {
+    setBusy(true);
+    setError('');
+    try {
+      const data = await request<{ downloadUrl: string }>('project', `documents/${encodeURIComponent(docId)}`);
+      window.open(data.downloadUrl, '_blank', 'noopener,noreferrer');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const projectNames = Object.fromEntries(projects.map(p => [itemId(p), readable(p.name)]));
+
+  return (
+    <section className="panel report-panel">
+      <div className="panelHeading">
+        <div>
+          <h2>Documentos de proyectos</h2>
+          <span>Adjunta y comparte archivos vinculados a cada proyecto.</span>
+        </div>
+        <span className="mode-chip">ADJUNTOS</span>
+      </div>
+      <form className="documents-form" onSubmit={upload}>
+        <label className="sr-only" htmlFor="s3-document-project">Proyecto</label>
+        <select id="s3-document-project" value={projectId} onChange={e => setProjectId(e.target.value)} disabled={!projects.length}>
+          {!projects.length && <option value="">No hay proyectos disponibles</option>}
+          {projects.map(p => <option key={itemId(p)} value={itemId(p)}>{readable(p.name)}</option>)}
+        </select>
+        <label className="sr-only" htmlFor="s3-document-file">Archivo</label>
+        <input
+          id="s3-document-file"
+          type="file"
+          accept=".pdf,.png,.jpg,.jpeg,.txt,.docx,application/pdf,image/png,image/jpeg,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          onChange={e => setFile(e.target.files?.[0] || null)}
+        />
+        <button className="primary" disabled={busy || !projects.length}>{busy ? 'Subiendo…' : 'Subir archivo'}</button>
+      </form>
+      {error && <p className="error assistant-state" role="alert">{error}</p>}
+      {message && <p className="assistant-state" role="status">{message}</p>}
+      <div className="orbital-reminder-list">
+        <h3>Archivos guardados</h3>
+        {documents.slice((docPage - 1) * PAGE_SIZE, docPage * PAGE_SIZE).map(doc => (
+          <article key={String(doc.id)}>
+            <div>
+              <b>{String(doc.fileName)}</b>
+              <span>
+                {projectNames[String(doc.projectId)] || 'Proyecto'} · {formatFileTypeBadge(doc.contentType, doc.fileName)} · {formatFileSize(doc.contentLength)}
+              </span>
+            </div>
+            <button className="textButton" disabled={busy} onClick={() => void download(String(doc.id))}>Descargar</button>
+          </article>
+        ))}
+        {!documents.length && <p>Aún no hay documentos adjuntos en esta organización.</p>}
+      </div>
+      <PaginationBar page={docPage} totalItems={documents.length} onPageChange={setDocPage} />
+      <small>Formatos permitidos: PDF, PNG, JPG, TXT y DOCX (máx. 20 MB). Los enlaces de descarga caducan tras unos minutos por seguridad.</small>
+    </section>
+  );
 }
 
 export function Workspace() {
   const [user, setUser] = useState(''); const [refreshToken, setRefreshToken] = useState(0);
   const [orgInfo, setOrgInfo] = useState<{ tenantId: string; role: string }>({ tenantId: '', role: '' });
-  const [userProfile, setUserProfile] = useState<{ username?: string; name?: string; email?: string; role?: string; tenantId?: string }>({});
+  const [userProfile, setUserProfile] = useState<{ username?: string; name?: string; email?: string; role?: string; tenantId?: string; organizationName?: string }>({});
   const [entityNames, setEntityNames] = useState<Record<string, string>>({});
   const [syncAsResource, setSyncAsResource] = useState(true);
   const [assistantQuestion, setAssistantQuestion] = useState(''); const [assistantAnswer, setAssistantAnswer] = useState<any>(null); const [assistantBusy, setAssistantBusy] = useState(false);
   const [, setMobileNavOpen] = useState(false); const appPath = usePathname();
-  const routeTabs: Record<string, string> = { portfolios: 'portfolio', projects: 'project', resources: 'resource', budgets: 'budget', priorities: 'priority', decisions: 'decisionlab', automations: 'automations', notifications: 'notifications', reports: 'reports', assistant: 'assistant', consulta: 'assistant', users: 'identity', tasks: 'tasks', assignments: 'assignments', expenses: 'expenses', rankings: 'rankings' };
-  const tabRoutes: Record<string, string> = { dashboard: '/app', portfolio: '/app/portfolios', project: '/app/projects', resource: '/app/resources', budget: '/app/budgets', priority: '/app/priorities', identity: '/app/users', tasks: '/app/tasks', assignments: '/app/assignments', expenses: '/app/expenses', rankings: '/app/rankings', decisionlab: '/app/decisions', automations: '/app/automations', notifications: '/app/notifications', reports: '/app/reports', assistant: '/app/consulta' };
+  const routeTabs: Record<string, string> = { portfolios: 'portfolio', projects: 'project', documents: 'documents', resources: 'resource', budgets: 'budget', priorities: 'priority', decisions: 'decisionlab', automations: 'automations', notifications: 'notifications', reports: 'reports', assistant: 'assistant', consulta: 'assistant', users: 'identity', tasks: 'tasks', assignments: 'assignments', expenses: 'expenses', rankings: 'rankings' };
+  const tabRoutes: Record<string, string> = { dashboard: '/app', portfolio: '/app/portfolios', project: '/app/projects', documents: '/app/documents', resource: '/app/resources', budget: '/app/budgets', priority: '/app/priorities', identity: '/app/users', tasks: '/app/tasks', assignments: '/app/assignments', expenses: '/app/expenses', rankings: '/app/rankings', decisionlab: '/app/decisions', automations: '/app/automations', notifications: '/app/notifications', reports: '/app/reports', assistant: '/app/consulta' };
   const initialSegment = window.location.pathname.split('/')[2] || '';
   const [tab, setTab] = useState(routeTabs[initialSegment] || 'dashboard');
   function selectTab(next: string) { setTab(next); setMobileNavOpen(false); const route = tabRoutes[next] || '/app'; if (window.location.pathname !== route) navigate(route); }
   useEffect(() => { const segment = appPath.split('/')[2] || ''; setTab(routeTabs[segment] || 'dashboard'); }, [appPath]);
   const [items, setItems] = useState<Item[]>([]); const [form, setForm] = useState<Record<string, string>>({});
-  const [editing, setEditing] = useState<Item | null>(null); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false); const [cursor, setCursor] = useState<string | null>(null); const [search, setSearch] = useState('');
+  const [editing, setEditing] = useState<Item | null>(null); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [busy, setBusy] = useState(false); const [cursor, setCursor] = useState<string | null>(null); const [search, setSearch] = useState(''); const [page, setPage] = useState(1);
   const [overview, setOverview] = useState<Record<string, Item[]>>({});
   const [overviewErrors, setOverviewErrors] = useState<string[]>([]);
   const [referenceOptions, setReferenceOptions] = useState<Record<string, Item[]>>({});
@@ -250,8 +461,8 @@ export function Workspace() {
   const [assignmentRows, setAssignmentRows] = useState<Item[]>([]); const [resourceRows, setResourceRows] = useState<Item[]>([]); const [projectRows, setProjectRows] = useState<Item[]>([]); const [assignmentForm, setAssignmentForm] = useState({ resourceId: '', projectId: '', allocation: '0.5' });
   const [budgetRows, setBudgetRows] = useState<Item[]>([]); const [expenseRows, setExpenseRows] = useState<Item[]>([]); const [expenseForm, setExpenseForm] = useState({ budgetId: '', description: '', amount: '', currency: 'USD' }); const [rankingRows, setRankingRows] = useState<Item[]>([]); const [priorityForm, setPriorityForm] = useState({ projectId: '', impact: '50', urgency: '50', risk: '50', alignment: '50' });
   const active = modules.find(m => m.key === tab); const dashboard = tab === 'dashboard';
-  const pageTitles: Record<string, string> = { tasks: 'Tablero Kanban', assignments: 'Asignaciones', expenses: 'Gastos', rankings: 'Ranking', decisionlab: 'Decision Lab', automations: 'Automatizaciones', notifications: 'Notificaciones', reports: 'Reportes', assistant: 'Consulta de informaci\u00f3n' };
-  const pageDescriptions: Record<string, string> = { dashboard: 'Proyectos, pendientes y decisiones en un mismo lugar.', automations: 'Programa y revisa el seguimiento de tu organización.', notifications: 'Consulta las notificaciones de tu usuario.', reports: 'Genera y descarga reportes del alcance autorizado.', assistant: 'Consulta hechos de las APIs de tu organización.' };
+  const pageTitles: Record<string, string> = { tasks: 'Tablero Kanban', documents: 'Documentos', assignments: 'Asignaciones', expenses: 'Gastos', rankings: 'Ranking', decisionlab: 'Decision Lab', automations: 'Automatizaciones', notifications: 'Notificaciones', reports: 'Reportes', assistant: 'Consulta de información' };
+  const pageDescriptions: Record<string, string> = { dashboard: 'Proyectos, pendientes y decisiones en un mismo lugar.', documents: 'Adjunta y descarga archivos vinculados a tus proyectos.', automations: 'Programa y revisa el seguimiento de tu organización.', notifications: 'Administra cómo y cuándo quieres recibir avisos.', reports: 'Genera y descarga informes de tu organización.', assistant: 'Consulta rápidamente el estado de tus proyectos y presupuestos.' };
   const activeTitle = active?.title || pageTitles[tab] || tab;
 
   useEffect(() => {
@@ -262,7 +473,7 @@ export function Workspace() {
           const parsed = JSON.parse(stored);
           setUser(parsed.email || '');
           setOrgInfo({ tenantId: String(parsed.tenantId || ''), role: String(parsed.role || '') });
-          setUserProfile({ username: parsed.id || parsed.email, name: parsed.name, email: parsed.email, role: parsed.role, tenantId: parsed.tenantId });
+          setUserProfile({ username: parsed.id || parsed.email, name: parsed.name, email: parsed.email, role: parsed.role, tenantId: parsed.tenantId, organizationName: parsed.organizationName });
         } catch { localStorage.removeItem('cloudportfolio.user'); }
       }
     } else {
@@ -276,6 +487,20 @@ export function Workspace() {
       }).catch(() => undefined);
     }
   }, []);
+
+  useEffect(() => {
+    const tenantId = userProfile.tenantId;
+    if (!user || !tenantId || userProfile.organizationName) return;
+    let activeOrgLookup = true;
+    void request<{ name?: string }>('identity', `tenants/${encodeURIComponent(tenantId)}`)
+      .then(data => {
+        if (activeOrgLookup && data?.name) {
+          setUserProfile(prev => ({ ...prev, organizationName: String(data.name).trim() }));
+        }
+      })
+      .catch(() => undefined);
+    return () => { activeOrgLookup = false; };
+  }, [user, userProfile.tenantId, userProfile.organizationName]);
 
   useEffect(() => {
     if (!user) return;
@@ -299,9 +524,21 @@ export function Workspace() {
         }
       });
       setEntityNames(map);
+      const usersResult = results[2];
+      if (usersResult?.status === 'fulfilled') {
+        const matched = usersResult.value.find(item => {
+          const itemEmail = String(item.email || '').trim().toLowerCase();
+          const currentEmail = String(userProfile.email || (user.includes('@') ? user : '')).trim().toLowerCase();
+          return (currentEmail && itemEmail === currentEmail) || (userProfile.username && itemId(item) === userProfile.username);
+        });
+        const matchedName = matched && typeof matched.name === 'string' ? matched.name.trim() : '';
+        if (matchedName) {
+          setUserProfile(prev => (prev.name ? prev : { ...prev, name: matchedName }));
+        }
+      }
     });
     return () => { activeLookup = false; };
-  }, [user, tab, refreshToken, items.length]);
+  }, [user, tab, refreshToken, items.length, userProfile.email, userProfile.username]);
 
   const load = useCallback(async (next?: string) => {
     if (!active) return;
@@ -363,7 +600,7 @@ export function Workspace() {
         }
       }
       setForm({}); setEditing(null); setFormOpen(false);
-      setNotice(editing ? 'Cambios guardados.' : active.key === 'identity' ? (payload.password ? 'Miembro creado en la organización y habilitado en Cognito.' : 'Miembro registrado en la organización.') : 'Registro creado.');
+      setNotice(editing ? 'Cambios guardados.' : active.key === 'identity' ? (payload.password ? 'Integrante creado con acceso inmediato.' : 'Integrante registrado en la organización.') : 'Registro creado.');
       await load();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   }
@@ -399,8 +636,10 @@ export function Workspace() {
     <NotificationCenter/>
   ) : tab === 'reports' ? (
     <ReportsPanel/>
+  ) : tab === 'documents' ? (
+    <DocumentsPanel/>
   ) : tab === 'assistant' ? (
-    <section className="panel intelligence-panel" id="astra-intelligence"><div className="panelHeading"><div><h2><Sparkles size={18}/> ProFiles Insights</h2><span>Consultas de solo lectura sobre APIs autorizadas de tu organización.</span></div><span className="mode-chip">REGLAS DETERMINISTAS</span></div><form className="assistant-form" onSubmit={e=>{e.preventDefault();void askAssistant();}}><label className="sr-only" htmlFor="assistant-question">Pregunta para Inteligencia ProFiles</label><input id="assistant-question" maxLength={500} value={assistantQuestion} onChange={e=>setAssistantQuestion(e.target.value)} placeholder="¿Qué proyectos están atrasados?"/><button className="primary" disabled={assistantBusy||!assistantQuestion.trim()}>{assistantBusy?'Consultando…':<>Consultar <ArrowRight size={15}/></>}</button></form><div className="assistant-prompts">{['¿Qué proyectos están atrasados?','¿Qué presupuesto está cerca de agotarse?','Resume mis prioridades'].map(q=><button key={q} onClick={()=>{setAssistantQuestion(q);void askAssistant(q);}}>{q}</button>)}</div>{assistantBusy&&<p className="assistant-state" role="status">Consultando las APIs de dominio con tu sesión…</p>}{assistantAnswer?.error&&<p className="error assistant-state" role="alert">{assistantAnswer.error}</p>}{assistantAnswer&&!assistantAnswer.error&&<div className="assistant-answer"><strong>Hechos consultados</strong><ul>{assistantAnswer.facts.map((fact:string,i:number)=><li key={i}>{fact}</li>)}</ul><strong>Sugerencias (no ejecutan cambios)</strong><ul>{assistantAnswer.suggestions.map((item:string,i:number)=><li key={i}>{item}</li>)}</ul>{assistantAnswer.relatedProjects?.length>0&&<><strong>Proyectos relacionados</strong><ul>{assistantAnswer.relatedProjects.map((item:any)=><li key={item.id}><a href="/app/projects">{item.name || item.id}</a> · {item.status} · cierre {item.endDate}</li>)}</ul></>}{assistantAnswer.relatedTasks?.length>0&&<><strong>Tareas para revisar</strong><ul>{assistantAnswer.relatedTasks.map((item:any)=><li key={item.id}><a href="/app/projects">{item.title || item.id}</a> · vence {item.dueDate}</li>)}</ul></>}<small>Alcance: primera página de hasta 100 resultados por dominio. {assistantAnswer.unavailable.length?`Servicios no disponibles: ${assistantAnswer.unavailable.join(', ')}.`:''}</small></div>}</section>
+    <section className="panel intelligence-panel" id="astra-intelligence"><div className="panelHeading"><div><h2><Sparkles size={18}/> ProFiles Insights</h2><span>Consultas rápidas de solo lectura sobre los proyectos y presupuestos de tu organización.</span></div><span className="mode-chip">CONSULTA RÁPIDA</span></div><form className="assistant-form" onSubmit={e=>{e.preventDefault();void askAssistant();}}><label className="sr-only" htmlFor="assistant-question">Pregunta para Inteligencia ProFiles</label><input id="assistant-question" maxLength={500} value={assistantQuestion} onChange={e=>setAssistantQuestion(e.target.value)} placeholder="¿Qué proyectos están atrasados?"/><button className="primary" disabled={assistantBusy||!assistantQuestion.trim()}>{assistantBusy?'Consultando…':<>Consultar <ArrowRight size={15}/></>}</button></form><div className="assistant-prompts">{['¿Qué proyectos están atrasados?','¿Qué presupuesto está cerca de agotarse?','Resume mis prioridades'].map(q=><button key={q} onClick={()=>{setAssistantQuestion(q);void askAssistant(q);}}>{q}</button>)}</div>{assistantBusy&&<p className="assistant-state" role="status">Consultando la información de tu organización…</p>}{assistantAnswer?.error&&<p className="error assistant-state" role="alert">{assistantAnswer.error}</p>}{assistantAnswer&&!assistantAnswer.error&&<div className="assistant-answer"><strong>Hechos consultados</strong><ul>{assistantAnswer.facts.map((fact:string,i:number)=><li key={i}>{fact}</li>)}</ul><strong>Sugerencias (no ejecutan cambios)</strong><ul>{assistantAnswer.suggestions.map((item:string,i:number)=><li key={i}>{item}</li>)}</ul>{assistantAnswer.relatedProjects?.length>0&&<><strong>Proyectos relacionados</strong><ul>{assistantAnswer.relatedProjects.map((item:any)=><li key={item.id}><a href="/app/projects">{item.name || 'Proyecto'}</a> · <StatusBadge value={item.status} /> · cierre {formatDate(item.endDate)}</li>)}</ul></>}{assistantAnswer.relatedTasks?.length>0&&<><strong>Tareas para revisar</strong><ul>{assistantAnswer.relatedTasks.map((item:any)=><li key={item.id}><a href="/app/tasks">{item.title || 'Tarea'}</a> · vence {formatDate(item.dueDate)}</li>)}</ul></>}<small>Basado en los registros actuales disponibles en tu organización.{assistantAnswer.unavailable.length?` Algunas áreas no estuvieron disponibles: ${assistantAnswer.unavailable.join(', ')}.`:''}</small></div>}</section>
   ) : tab === 'tasks' ? (
     <>
       <section className="panel">
@@ -466,7 +705,7 @@ export function Workspace() {
                     )}
                     <div className="taskCard-footer">
                       <select aria-label={`Estado de ${readable(x.title)}`} value={String(x.status)} onChange={e => void moveTask(x, e.target.value)}>
-                        {['TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE'].map(v => <option key={v} value={v}>{v}</option>)}
+                        {['TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE'].map(v => <option key={v} value={v}>{formatTaskStatus(v)}</option>)}
                       </select>
                       {s === 'TODO' && <button type="button" className="task-quick-btn" onClick={() => void moveTask(x, 'IN_PROGRESS')}>Iniciar</button>}
                       {s === 'IN_PROGRESS' && <button type="button" className="task-quick-btn complete" onClick={() => void moveTask(x, 'DONE')}>Completar</button>}
@@ -483,12 +722,14 @@ export function Workspace() {
   ) : tab === 'assignments' ? (
     <><section className="panel"><h2>Asignar recurso a proyecto</h2><form className="create" onSubmit={createAssignment}><label>Recurso<select required value={assignmentForm.resourceId} onChange={e=>setAssignmentForm({...assignmentForm,resourceId:e.target.value})}><option value="">Selecciona</option>{resourceRows.map(x=><option key={itemId(x)} value={itemId(x)}>{readable(x.name)}</option>)}</select></label><label>Proyecto<select required value={assignmentForm.projectId} onChange={e=>setAssignmentForm({...assignmentForm,projectId:e.target.value})}><option value="">Selecciona</option>{projectRows.map(x=><option key={itemId(x)} value={itemId(x)}>{readable(x.name)}</option>)}</select></label><label>Asignación (%)<input type="number" min="1" max="100" value={Number(assignmentForm.allocation)*100} onChange={e=>setAssignmentForm({...assignmentForm,allocation:String(Number(e.target.value)/100)})}/></label><button disabled={busy}><UserPlus size={16}/>Asignar</button></form></section><DataTable title="Asignaciones" rows={assignmentRows} fields={['resourceId','projectId','allocation','startDate','endDate']} entityNames={entityNames}/></>
   ) : tab === 'expenses' ? (
-    <><section className="panel"><h2>Registrar gasto</h2><form className="create" onSubmit={createExpense}><label>Presupuesto<select required value={expenseForm.budgetId} onChange={e=>setExpenseForm({...expenseForm,budgetId:e.target.value})}><option value="">Selecciona</option>{budgetRows.map(x=><option key={itemId(x)} value={itemId(x)}>{entityNames[String(x.projectId)] || readable(x.projectId)} · {readable(x.currency)}</option>)}</select></label><label>Descripción<input required value={expenseForm.description} onChange={e=>setExpenseForm({...expenseForm,description:e.target.value})}/></label><label>Importe<input required type="number" min="0.01" step="0.01" value={expenseForm.amount} onChange={e=>setExpenseForm({...expenseForm,amount:e.target.value})}/></label><button disabled={busy}><ReceiptText size={16}/>Registrar</button></form></section><DataTable title="Gastos recientes" rows={expenseRows} fields={['description','projectId','amount','currency','createdAt']} entityNames={entityNames}/></>
+    <><section className="panel"><h2>Registrar gasto</h2><form className="create" onSubmit={createExpense}><label>Presupuesto<select required value={expenseForm.budgetId} onChange={e=>setExpenseForm({...expenseForm,budgetId:e.target.value})}><option value="">Selecciona</option>{budgetRows.map(x=><option key={itemId(x)} value={itemId(x)}>{entityNames[String(x.projectId)] || (isOpaqueId(x.projectId) ? 'Proyecto' : readable(x.projectId))} · {readable(x.currency)}</option>)}</select></label><label>Descripción<input required value={expenseForm.description} onChange={e=>setExpenseForm({...expenseForm,description:e.target.value})}/></label><label>Importe<input required type="number" min="0.01" step="0.01" value={expenseForm.amount} onChange={e=>setExpenseForm({...expenseForm,amount:e.target.value})}/></label><button disabled={busy}><ReceiptText size={16}/>Registrar</button></form></section><DataTable title="Gastos recientes" rows={expenseRows} fields={['description','projectId','amount','currency','createdAt']} entityNames={entityNames}/></>
   ) : tab === 'rankings' ? (
     <><section className="panel"><h2>Recalcular prioridad</h2><form className="create" onSubmit={recalculatePriority}><label>Proyecto<select required value={priorityForm.projectId} onChange={e=>setPriorityForm({...priorityForm,projectId:e.target.value})}><option value="">Selecciona</option>{projectRows.map(x=><option key={itemId(x)} value={itemId(x)}>{readable(x.name)}</option>)}</select></label>{(['impact','urgency','risk','alignment'] as const).map(k=><label key={k}>{fieldLabel(k)}<input type="number" min="0" max="100" value={priorityForm[k]} onChange={e=>setPriorityForm({...priorityForm,[k]:e.target.value})}/></label>)}<button disabled={busy}><ArrowUpDown size={16}/>Calcular</button></form></section><DataTable title="Ranking de proyectos" rows={rankingRows} fields={['rank','projectId','score','impact','urgency','risk','alignment']} entityNames={entityNames}/></>
   ) : null;
 
   const filtered = useMemo(() => items.filter(item => Object.values(item).some(v => String(v ?? '').toLowerCase().includes(search.toLowerCase()))), [items, search]);
+  useEffect(() => { setPage(1); }, [tab, search]);
+  const pagedFiltered = useMemo(() => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE), [filtered, page]);
   const projects = overview.project || []; const portfolios = overview.portfolio || []; const budgets = overview.budget || [];
   const activeProjectsCount = projects.filter(p => ['active', 'in_progress', 'in-progress'].includes(String(p.status || '').toLowerCase())).length;
   const completedProjectsCount = projects.filter(p => ['completed', 'complete', 'done'].includes(String(p.status || '').toLowerCase())).length;
@@ -500,7 +741,7 @@ export function Workspace() {
   return <div className="layout workspace-layout"><TopNav tab={tab} user={user} userProfile={userProfile} onNavigate={selectTab} onSignOut={async () => { if (localAuth) { localStorage.removeItem('cloudportfolio.accessToken'); localStorage.removeItem('cloudportfolio.user'); } else await signOutFromCognito(); setUser(''); navigate('/'); }}/>
     <main key={tab} className="workspace-view"><PageHeader eyebrow={`ProFiles / ${(dashboard ? 'VISIÓN GENERAL' : activeTitle).toUpperCase()}`} title={dashboard ? 'Resumen ejecutivo' : activeTitle} description={dashboard ? 'Proyectos, pendientes y decisiones en un mismo lugar.' : pageDescriptions[tab] || `Consulta y administra ${activeTitle.toLowerCase()} de tu organización.`} action={<button className="secondary" disabled={busy} onClick={() => setRefreshToken(n => n + 1)}><RefreshCw size={16} className={busy ? 'spin' : ''} />Actualizar</button>}/>
       {error && <div className="error banner toast" role="alert">{error}<button aria-label="Cerrar error" onClick={() => setError('')}><X size={16} /></button></div>}{notice && <div className="notice banner toast" role="status">{notice}<button aria-label="Cerrar aviso" onClick={() => setNotice('')}><X size={16} /></button></div>}
-      {dashboard ? <><section className="dashboard-overview" aria-label="Estado del espacio de trabajo"><div className="dashboard-welcome"><div><span className="welcome-eyebrow">TU ESPACIO DE TRABAJO</span><h2>Todo lo importante, en un lugar.</h2><p>Revisa tus proyectos y encuentra el siguiente paso para tu equipo.</p></div><div className="welcome-emblem" aria-hidden="true"><FolderKanban size={38}/><span><Sparkles size={17}/></span></div></div>
+      {dashboard ? <><section className="dashboard-overview" aria-label="Estado del espacio de trabajo"><div className="dashboard-welcome"><div><span className="welcome-eyebrow">{userProfile.organizationName || 'TU ESPACIO DE TRABAJO'}</span><h2>{userProfile.name ? `Hola, ${userProfile.name.split(/\s+/)[0]}` : 'Todo lo importante, en un lugar.'}</h2><p>{userProfile.name ? 'Todo lo importante de tu organización en un mismo lugar.' : 'Revisa tus proyectos y encuentra el siguiente paso para tu equipo.'}</p></div><div className="welcome-emblem" aria-hidden="true"><FolderKanban size={38}/><span><Sparkles size={17}/></span></div></div>
         {overviewErrors.length > 0 && <div className="overview-warning" role="status">No se pudieron consultar: {overviewErrors.join(', ')}. Los datos disponibles se muestran por separado.</div>}
         <div className="dashboard-kpis" aria-busy={busy}>
           <article>
@@ -538,26 +779,26 @@ export function Workspace() {
           </article>
         </div>
         <section className="panel attention-panel"><div className="panelHeading"><div><h2>Qué necesita atención</h2><span>Elementos derivados de fechas y montos registrados</span></div><button className="textButton" onClick={() => selectTab('project')}>Revisar proyectos <ArrowRight size={14}/></button></div>
-          <div className="attention-list">{projects.filter(p => p.endDate && String(p.endDate).slice(0, 10) < new Date().toLocaleDateString('sv-SE') && !['completed', 'complete', 'done'].includes(String(p.status).toLowerCase())).slice(0, 4).map((p, i) => <div className="attention-row" key={itemId(p) || i}><span className="attention-marker overdue"/><div><strong>{readable(p.name)}</strong><small>Fecha de cierre registrada: {formatDate(p.endDate)}</small></div><span className="attention-tag tag-overdue">Vencido</span></div>)}{budgets.filter(b => Number.isFinite(Number(b.allocated)) && Number.isFinite(Number(b.spent)) && Number(b.spent) > Number(b.allocated)).slice(0, 3).map((b, i) => <div className="attention-row" key={itemId(b) || i}><span className="attention-marker budget"/><div><strong>Presupuesto &middot; {entityNames[String(b.projectId)] || readable(b.projectId)}</strong><small>Gasto {formatCurrency(b.spent, b.currency)} supera monto asignado {formatCurrency(b.allocated, b.currency)} &middot; {readable(b.currency)}</small></div><span className="attention-tag tag-budget">Revisar</span></div>)}{overview.project && overview.budget && !projects.some(p => p.endDate && String(p.endDate).slice(0, 10) < new Date().toLocaleDateString('sv-SE') && !['completed', 'complete', 'done'].includes(String(p.status).toLowerCase())) && !budgets.some(b => Number.isFinite(Number(b.allocated)) && Number.isFinite(Number(b.spent)) && Number(b.spent) > Number(b.allocated)) && <div className="dashboard-empty"><strong>{busy ? 'Consultando registros...' : projects.length || budgets.length ? 'No se detectaron excepciones con los datos disponibles.' : 'A\u00fan no hay datos para revisar.'}</strong><span>{projects.length || budgets.length ? 'La lista refleja solo fechas y montos registrados.' : 'Crea un proyecto para comenzar a organizar el trabajo.'}</span></div>}</div>
+          <div className="attention-list">{projects.filter(p => p.endDate && String(p.endDate).slice(0, 10) < new Date().toLocaleDateString('sv-SE') && !['completed', 'complete', 'done'].includes(String(p.status).toLowerCase())).slice(0, 4).map((p, i) => <div className="attention-row" key={itemId(p) || i}><span className="attention-marker overdue"/><div><strong>{readable(p.name)}</strong><small>Fecha de cierre registrada: {formatDate(p.endDate)}</small></div><span className="attention-tag tag-overdue">Vencido</span></div>)}{budgets.filter(b => Number.isFinite(Number(b.allocated)) && Number.isFinite(Number(b.spent)) && Number(b.spent) > Number(b.allocated)).slice(0, 3).map((b, i) => <div className="attention-row" key={itemId(b) || i}><span className="attention-marker budget"/><div><strong>Presupuesto &middot; {entityNames[String(b.projectId)] || (isOpaqueId(b.projectId) ? 'Proyecto' : readable(b.projectId))}</strong><small>Gasto {formatCurrency(b.spent, b.currency)} supera monto asignado {formatCurrency(b.allocated, b.currency)} &middot; {readable(b.currency)}</small></div><span className="attention-tag tag-budget">Revisar</span></div>)}{overview.project && overview.budget && !projects.some(p => p.endDate && String(p.endDate).slice(0, 10) < new Date().toLocaleDateString('sv-SE') && !['completed', 'complete', 'done'].includes(String(p.status).toLowerCase())) && !budgets.some(b => Number.isFinite(Number(b.allocated)) && Number.isFinite(Number(b.spent)) && Number(b.spent) > Number(b.allocated)) && <div className="dashboard-empty"><strong>{busy ? 'Consultando registros...' : projects.length || budgets.length ? 'No se detectaron excepciones con los datos disponibles.' : 'A\u00fan no hay datos para revisar.'}</strong><span>{projects.length || budgets.length ? 'La lista refleja solo fechas y montos registrados.' : 'Crea un proyecto para comenzar a organizar el trabajo.'}</span></div>}</div>
           <div className="dashboard-actions"><button className="secondary" onClick={() => selectTab('project')}>Abrir proyectos</button><button className="secondary" onClick={() => selectTab('decisionlab')}>Comparar escenarios</button><button className="secondary" onClick={() => selectTab('automations')}>Ver automatizaciones</button></div>
         </section>
-        <section className="dashboard-secondary-grid"><div className="panel"><div className="panelHeading"><div><h2><FolderKanban size={19}/> Proyectos destacados</h2><span>Proyectos disponibles en la primera página</span></div><button className="textButton" onClick={() => selectTab('project')}>Ver todos <ArrowRight size={14}/></button></div>{!overview.project && !busy ? <div className="dashboard-empty">No se pudieron cargar los proyectos. Actualiza para reintentar.</div> : projects.length ? <div className="projectList">{projects.slice(0, 5).map((p, i) => <div className="projectRow" key={itemId(p) || i}><span className="projectIcon"><BriefcaseBusiness size={17}/></span><div className="projectName"><strong>{readable(p.name)}</strong><small>{entityNames[String(p.portfolioId)] || readable(p.portfolioId)} &middot; responsable {entityNames[String(p.ownerId)] || readable(p.ownerId)}</small></div><StatusBadge value={p.status || 'Planificación'} /></div>)}</div> : <div className="dashboard-empty"><strong>{busy ? 'Cargando proyectos…' : 'Todavía no hay proyectos.'}</strong><span>Cuando existan registros, aparecerán aquí.</span></div>}</div>
+        <section className="dashboard-secondary-grid"><div className="panel"><div className="panelHeading"><div><h2><FolderKanban size={19}/> Proyectos destacados</h2><span>Proyectos recientes de tu organización</span></div><button className="textButton" onClick={() => selectTab('project')}>Ver todos <ArrowRight size={14}/></button></div>{!overview.project && !busy ? <div className="dashboard-empty">No se pudieron cargar los proyectos. Actualiza para reintentar.</div> : projects.length ? <div className="projectList">{projects.slice(0, 5).map((p, i) => <div className="projectRow" key={itemId(p) || i}><span className="projectIcon"><BriefcaseBusiness size={17}/></span><div className="projectName"><strong>{readable(p.name)}</strong><small>{entityNames[String(p.portfolioId)] || (isOpaqueId(p.portfolioId) ? 'Sin portafolio' : readable(p.portfolioId))} &middot; responsable {entityNames[String(p.ownerId)] || (isOpaqueId(p.ownerId) ? 'Sin asignar' : readable(p.ownerId))}</small></div><StatusBadge value={p.status || 'Planificación'} /></div>)}</div> : <div className="dashboard-empty"><strong>{busy ? 'Cargando proyectos…' : 'Todavía no hay proyectos.'}</strong><span>Cuando existan registros, aparecerán aquí.</span></div>}</div>
           <aside className="panel quick-actions"><h2><Sparkles size={19}/> Accesos directos</h2><button onClick={() => selectTab('project')}><FolderKanban size={16}/>Gestionar proyectos <ArrowRight size={14}/></button><button onClick={() => selectTab('decisionlab')}><Target size={16}/>Evaluar una decisión <ArrowRight size={14}/></button><button onClick={() => selectTab('automations')}><Workflow size={16}/>Programar seguimiento <ArrowRight size={14}/></button><button onClick={() => selectTab('reports')}><FileBarChart size={16}/>Consultar reportes <ArrowRight size={14}/></button></aside>
-        </section><section className="panel timeline-panel"><div className="panelHeading"><div><h2>Proximos vencimientos</h2><span>Fechas de cierre registradas en proyectos visibles</span></div><CalendarDays size={18}/></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando vencimientos"/> : !overview.project ? <p className="insight-empty">No se pudieron consultar los proyectos.</p> : projects.filter(p => typeof p.endDate === 'string' && p.endDate.slice(0,10) >= new Date().toLocaleDateString('sv-SE')).sort((a,b) => String(a.endDate).localeCompare(String(b.endDate))).slice(0,4).map((p,i) => <div className="insight-row" key={itemId(p)||i}><span>{readable(p.name)}</span><strong>{formatDate(p.endDate)}</strong></div>)}{!busy && overview.project && !projects.some(p => typeof p.endDate === 'string' && p.endDate.slice(0,10) >= new Date().toLocaleDateString('sv-SE')) && <p className="insight-empty">No hay fechas proximas registradas.</p>}</section><section className="panel timeline-panel"><div className="panelHeading"><div><h2>Actividad registrada</h2><span>Ultimas actualizaciones disponibles de proyectos</span></div><Activity size={18}/></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando actividad"/> : !overview.project ? <p className="insight-empty">No se pudo consultar la actividad.</p> : projects.filter(p => typeof p.updatedAt === 'string').sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0,4).map((p,i) => <div className="insight-row" key={itemId(p)||i}><span>{readable(p.name)}</span><strong>{formatDate(p.updatedAt)}</strong></div>)}{!busy && overview.project && !projects.some(p => typeof p.updatedAt === 'string') && <p className="insight-empty">No hay actualizaciones registradas en los proyectos visibles.</p>}</section><div className="insight-grid">
-          <section className="panel insight-card"><div className="panelHeading"><div><h2><Wallet size={19}/> Presupuestos</h2><span>Montos registrados por proyecto</span></div><button className="textButton" onClick={() => selectTab('budget')}>Abrir <ArrowRight size={14}/></button></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando presupuestos"/> : !overview.budget ? <p className="insight-empty">No se pudo consultar esta información.</p> : budgets.length ? budgets.slice(0,3).map((b,i) => { const alloc = Number(b.allocated) || 0; const sp = Number(b.spent) || 0; const pct = alloc > 0 ? Math.min(100, Math.round((sp / alloc) * 100)) : 0; const over = alloc > 0 && sp > alloc; return <div className="insight-budget-item" key={itemId(b)||i}><div className="insight-row"><span>{entityNames[String(b.projectId)] || readable(b.projectId)}</span><strong>{formatCurrency(b.spent, b.currency)} / {formatCurrency(b.allocated, b.currency)}</strong></div><div className="inline-meter-track"><span className={`inline-meter-fill ${over ? 'fill-rose' : pct >= 80 ? 'fill-amber' : 'fill-emerald'}`} style={{ width: `${pct}%` }} /></div></div>; }) : <p className="insight-empty">Agrega un presupuesto para empezar el seguimiento.</p>}</section>
-          <section className="panel insight-card"><div className="panelHeading"><div><h2><Users size={19}/> Equipo y recursos</h2><span>Recursos disponibles en esta página</span></div><button className="textButton" onClick={() => selectTab('resource')}>Abrir <ArrowRight size={14}/></button></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando recursos"/> : !overview.resource ? <p className="insight-empty">No se pudo consultar esta información.</p> : overview.resource.length ? overview.resource.slice(0,3).map((r,i) => <div className="insight-row" key={itemId(r)||i}><UserAvatar name={r.name} size={24} /><StatusBadge value={r.status} /></div>) : <p className="insight-empty">Aún no hay recursos registrados.</p>}</section>
-          <section className="panel insight-card"><div className="panelHeading"><div><h2>ProFiles Insights</h2><span>Señales basadas en tus registros</span></div><Sparkles size={18}/></div><p className="insight-empty">Revisa fechas vencidas y presupuestos que superan lo asignado. Son reglas sobre datos visibles, no predicciones.</p><button className="textButton" onClick={() => selectTab('assistant')}>Explorar información <ArrowRight size={14}/></button></section>
-        </div><div className="dataNote"><Activity size={16}/> El resumen utiliza las primeras páginas devueltas por las APIs. Los importes se muestran por registro y no se suman entre monedas.</div>
+        </section><section className="panel timeline-panel"><div className="panelHeading"><div><h2>Próximos vencimientos</h2><span>Fechas de cierre registradas en proyectos visibles</span></div><CalendarDays size={18}/></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando vencimientos"/> : !overview.project ? <p className="insight-empty">No se pudieron consultar los proyectos.</p> : projects.filter(p => typeof p.endDate === 'string' && p.endDate.slice(0,10) >= new Date().toLocaleDateString('sv-SE')).sort((a,b) => String(a.endDate).localeCompare(String(b.endDate))).slice(0,4).map((p,i) => <div className="insight-row" key={itemId(p)||i}><span>{readable(p.name)}</span><strong>{formatDate(p.endDate)}</strong></div>)}{!busy && overview.project && !projects.some(p => typeof p.endDate === 'string' && p.endDate.slice(0,10) >= new Date().toLocaleDateString('sv-SE')) && <p className="insight-empty">No hay fechas próximas registradas.</p>}</section><section className="panel timeline-panel"><div className="panelHeading"><div><h2>Actividad registrada</h2><span>Últimas actualizaciones disponibles de proyectos</span></div><Activity size={18}/></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando actividad"/> : !overview.project ? <p className="insight-empty">No se pudo consultar la actividad.</p> : projects.filter(p => typeof p.updatedAt === 'string').sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0,4).map((p,i) => <div className="insight-row" key={itemId(p)||i}><span>{readable(p.name)}</span><strong>{formatDate(p.updatedAt)}</strong></div>)}{!busy && overview.project && !projects.some(p => typeof p.updatedAt === 'string') && <p className="insight-empty">No hay actualizaciones registradas en los proyectos visibles.</p>}</section><div className="insight-grid">
+          <section className="panel insight-card"><div className="panelHeading"><div><h2><Wallet size={19}/> Presupuestos</h2><span>Montos registrados por proyecto</span></div><button className="textButton" onClick={() => selectTab('budget')}>Abrir <ArrowRight size={14}/></button></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando presupuestos"/> : !overview.budget ? <p className="insight-empty">No se pudo consultar esta información.</p> : budgets.length ? budgets.slice(0,3).map((b,i) => { const alloc = Number(b.allocated) || 0; const sp = Number(b.spent) || 0; const pct = alloc > 0 ? Math.min(100, Math.round((sp / alloc) * 100)) : 0; const over = alloc > 0 && sp > alloc; return <div className="insight-budget-item" key={itemId(b)||i}><div className="insight-row"><span>{entityNames[String(b.projectId)] || (isOpaqueId(b.projectId) ? 'Proyecto' : readable(b.projectId))}</span><strong>{formatCurrency(b.spent, b.currency)} / {formatCurrency(b.allocated, b.currency)}</strong></div><div className="inline-meter-track"><span className={`inline-meter-fill ${over ? 'fill-rose' : pct >= 80 ? 'fill-amber' : 'fill-emerald'}`} style={{ width: `${pct}%` }} /></div></div>; }) : <p className="insight-empty">Agrega un presupuesto para empezar el seguimiento.</p>}</section>
+          <section className="panel insight-card"><div className="panelHeading"><div><h2><Users size={19}/> Equipo y recursos</h2><span>Integrantes y recursos activos</span></div><button className="textButton" onClick={() => selectTab('resource')}>Abrir <ArrowRight size={14}/></button></div>{busy ? <div className="skeleton-line" role="status" aria-label="Cargando recursos"/> : !overview.resource ? <p className="insight-empty">No se pudo consultar esta información.</p> : overview.resource.length ? overview.resource.slice(0,3).map((r,i) => <div className="insight-row" key={itemId(r)||i}><UserAvatar name={r.name} size={24} /><StatusBadge value={r.status} /></div>) : <p className="insight-empty">Aún no hay recursos registrados.</p>}</section>
+          <section className="panel insight-card"><div className="panelHeading"><div><h2>ProFiles Insights</h2><span>Señales basadas en tus registros</span></div><Sparkles size={18}/></div><p className="insight-empty">Revisa fechas vencidas y presupuestos que superan lo asignado con base en los datos visibles.</p><button className="textButton" onClick={() => selectTab('assistant')}>Explorar información <ArrowRight size={14}/></button></section>
+        </div><div className="dataNote"><Activity size={16}/> Resumen calculado con los registros actuales de tu organización. Los importes se muestran por registro en su moneda original.</div>
       </section></> : active ? <>
-        <div className="module-intro"><div><span className="module-kicker">TU ESPACIO DE TRABAJO</span><h2>{active.title}</h2><p>{active.key === 'identity' ? 'Agrega miembros a tu organización, define su rol (RBAC) y habilítalos para colaborar en proyectos.' : 'Consulta y organiza los registros disponibles para tu equipo.'}</p></div><button className="primary" onClick={startCreate}><Plus size={16}/> {active.key === 'identity' ? 'Nuevo miembro' : 'Nuevo registro'}</button></div>
+        <div className="module-intro"><div><span className="module-kicker">TU ESPACIO DE TRABAJO</span><h2>{active.title}</h2><p>{active.key === 'identity' ? 'Agrega integrantes a tu organización, define su nivel de acceso y habilítalos para colaborar en proyectos.' : 'Consulta y organiza los registros disponibles para tu equipo.'}</p></div><button className="primary" onClick={startCreate}><Plus size={16}/> {active.key === 'identity' ? 'Nuevo miembro' : 'Nuevo registro'}</button></div>
         {active.key === 'identity' && (
           <div className="org-identity-banner" aria-label="Código de invitación de la organización">
             <div>
-              <strong>Organización compartida (Multi-Tenant)</strong>
-              <p>Puedes crear cuentas directamente con contraseña usando <b>Nuevo miembro</b>, o compartir este código de organización para que tus compañeros se unan desde <b>/register &rarr; Unirme con código</b>.</p>
+              <strong>Invita a tu equipo</strong>
+              <p>Puedes crear cuentas directamente con <b>Nuevo miembro</b>, o compartir este código de invitación para que tus compañeros se unan al registrarse.</p>
             </div>
             <div className="org-identity-meta">
-              {orgInfo.role && <StatusBadge value={orgInfo.role} />}
+              <span className="invite-code-label">Código de invitación</span>
               {orgInfo.tenantId && <CopyIdBadge id={orgInfo.tenantId} full />}
             </div>
           </div>
@@ -565,7 +806,7 @@ export function Workspace() {
         <Modal
           open={formOpen}
           title={editing ? (active.key === 'budget' ? 'Editar presupuesto de proyecto' : `Editar ${active.title.toLowerCase()}`) : active.key === 'identity' ? 'Agregar miembro a la organización' : active.key === 'budget' ? 'Asignar presupuesto a proyecto' : `Crear registro en ${active.title}`}
-          subtitle={active.key === 'identity' ? 'El miembro compartirá los portafolios y proyectos de tu organización según su rol.' : active.key === 'budget' ? 'Define el techo financiero asignado y el gasto ejecutado acumulado para el proyecto seleccionado.' : 'Los campos se validan según el contrato del servicio.'}
+          subtitle={active.key === 'identity' ? 'La persona compartirá los portafolios y proyectos de tu organización según su nivel de acceso.' : active.key === 'budget' ? 'Define el techo financiero asignado y el gasto ejecutado acumulado para el proyecto seleccionado.' : 'Completa la información para guardar este registro en tu organización.'}
           onClose={() => { setFormOpen(false); setEditing(null); }}
         >
           <form className="create modal-form" onSubmit={save}>
@@ -589,22 +830,22 @@ export function Workspace() {
                     </select>
                   ) : field === 'role' ? (
                     <select required={active.required.includes(field)} value={form[field] || 'MANAGER'} onChange={e => setForm({ ...form, [field]: e.target.value })}>
-                      <option value="MANAGER">MANAGER (Gestor · Crea y edita proyectos/tareas)</option>
-                      <option value="VIEWER">VIEWER (Lector · Solo consulta)</option>
-                      <option value="ADMIN">ADMIN (Administrador · Control total)</option>
+                      <option value="MANAGER">Gestor — Crea y edita proyectos y tareas</option>
+                      <option value="VIEWER">Solo lectura — Consulta sin realizar cambios</option>
+                      <option value="ADMIN">Administrador — Control completo de la organización</option>
                     </select>
                   ) : field === 'type' && active.key === 'resource' ? (
                     <select required={active.required.includes(field)} value={form[field] || 'person'} onChange={e => setForm({ ...form, [field]: e.target.value })}>
-                      <option value="person">person (Persona / Especialista)</option>
-                      <option value="team">team (Equipo / Célula)</option>
-                      <option value="equipment">equipment (Licencia / Infraestructura)</option>
+                      <option value="person">Persona / Especialista</option>
+                      <option value="team">Equipo / Célula</option>
+                      <option value="equipment">Equipamiento / Licencia</option>
                     </select>
                   ) : field === 'capacity' && active.key === 'resource' ? (
                     <select required={active.required.includes(field)} value={form[field] || '1'} onChange={e => setForm({ ...form, [field]: e.target.value })}>
-                      <option value="1">100% (Tiempo completo · 1.0 FTE)</option>
-                      <option value="0.75">75% (Tres cuartos · 0.75 FTE)</option>
-                      <option value="0.5">50% (Medio tiempo · 0.5 FTE)</option>
-                      <option value="0.25">25% (Cuarto de tiempo · 0.25 FTE)</option>
+                      <option value="1">100% — Tiempo completo</option>
+                      <option value="0.75">75% — Tres cuartos</option>
+                      <option value="0.5">50% — Medio tiempo</option>
+                      <option value="0.25">25% — Cuarto de tiempo</option>
                     </select>
                   ) : field === 'currency' ? (
                     <select required={active.required.includes(field)} value={form[field] || 'USD'} onChange={e => setForm({ ...form, [field]: e.target.value })}>
@@ -615,12 +856,12 @@ export function Workspace() {
                   ) : field === 'status' ? (
                     <select required={active.required.includes(field)} value={form[field] || 'ACTIVE'} onChange={e => setForm({ ...form, [field]: e.target.value })}>
                       <option value="">Selecciona estado</option>
-                      <option value="ACTIVE">ACTIVE (Activo)</option>
-                      <option value="PLANNED">PLANNED (Planificado)</option>
-                      <option value="IN_PROGRESS">IN_PROGRESS (En progreso)</option>
-                      <option value="ON_HOLD">ON_HOLD (En pausa)</option>
-                      <option value="COMPLETED">COMPLETED (Completado)</option>
-                      <option value="BLOCKED">BLOCKED (Bloqueado)</option>
+                      <option value="ACTIVE">Activo</option>
+                      <option value="PLANNED">Planificado</option>
+                      <option value="IN_PROGRESS">En progreso</option>
+                      <option value="ON_HOLD">En pausa</option>
+                      <option value="COMPLETED">Completado</option>
+                      <option value="BLOCKED">Bloqueado</option>
                     </select>
                   ) : (
                     <input
@@ -637,17 +878,17 @@ export function Workspace() {
               {active.key === 'identity' && !editing && (
                 <div className="modal-extra-section">
                   <label>
-                    Contraseña inicial de acceso (Cognito · opcional)
+                    Contraseña inicial de acceso (opcional)
                     <input
                       type="password"
                       minLength={12}
                       maxLength={256}
                       value={form.password || ''}
                       onChange={e => setForm({ ...form, password: e.target.value })}
-                      placeholder="Ej. Equipo2026!ProFiles"
+                      placeholder="Mínimo 12 caracteres"
                     />
                   </label>
-                  <small>Si ingresas una contraseña (mín. 12 caracteres, mayúscula, minúscula, número y símbolo), se creará su cuenta en Amazon Cognito dentro de tu organización para que inicie sesión directamente en <b>/login</b>.</small>
+                  <small>Si defines una contraseña (mín. 12 caracteres, mayúscula, minúscula, número y símbolo), la persona podrá iniciar sesión de inmediato con su correo.</small>
                   <label className="check-label">
                     <input type="checkbox" checked={syncAsResource} onChange={e => setSyncAsResource(e.target.checked)} />
                     Registrar también en Recursos para asignarlo a proyectos y capacidad
@@ -706,14 +947,14 @@ export function Workspace() {
           <Modal
             open={Boolean(confirmDelete)}
             title="Confirmar eliminación"
-            subtitle="Esta acción es irreversible y eliminará el dato en la nube."
+            subtitle="Esta acción no se puede deshacer."
             onClose={() => setConfirmDelete(null)}
           >
             <div className="confirm-delete-box">
               <p className="confirm-delete-message">
-                ¿Estás seguro de que deseas eliminar permanentemente <strong>"{readable(confirmDelete.name ?? entityNames[String(confirmDelete.projectId)] ?? confirmDelete.projectId ?? itemId(confirmDelete))}"</strong> de tu organización?
+                ¿Estás seguro de que deseas eliminar permanentemente <strong>"{readable(confirmDelete.name ?? entityNames[String(confirmDelete.projectId)] ?? (isOpaqueId(confirmDelete.projectId) ? 'este registro' : confirmDelete.projectId) ?? 'este registro')}"</strong> de tu organización?
               </p>
-              <small className="confirm-delete-subtext">El registro se eliminará de las tablas DynamoDB del tenant y dejará de estar disponible para todos los miembros.</small>
+              <small className="confirm-delete-subtext">El registro dejará de estar disponible para todos los integrantes de tu organización.</small>
               <div className="modal-form-actions">
                 <button type="button" className="secondary" onClick={() => setConfirmDelete(null)}>Cancelar</button>
                 <button type="button" className="danger" disabled={busy} onClick={() => void executeRemove(confirmDelete)}>
@@ -724,7 +965,7 @@ export function Workspace() {
           </Modal>
         )}
 
-        <section className="panel"><div className="panelHeading listHeading"><div><h2>Registros</h2><span>{filtered.length} visibles · resultados páginados por tenant</span></div><label className="searchBox"><Search size={16} /><input aria-label="Buscar registros" placeholder="Buscar…" value={search} onChange={e => setSearch(e.target.value)} /></label></div><div className="tableWrap"><table><thead><tr><th>Registro</th>{active.fields.slice(0, 4).map(f => <th key={f}>{fieldLabel(f)}</th>)}<th>Acciones</th></tr></thead><tbody>{filtered.map((item, i) => <tr key={itemId(item) || i}><td className="idCell"><CopyIdBadge id={itemId(item)} /></td>{active.fields.slice(0, 4).map(f => <td key={f}>{renderFormattedCell(f, item, entityNames)}</td>)}<td><div className="rowActions">{active.key === 'project' && <><button type="button" onClick={() => { setTaskProject(itemId(item)); selectTab('tasks'); }}>Tareas</button><button type="button" onClick={() => { setAssignmentForm(old => ({ ...old, projectId: itemId(item) })); selectTab('assignments'); }}>Equipo</button></>}<button onClick={() => startEdit(item)}>Editar</button><button className="deleteAction" onClick={() => setConfirmDelete(item)}>Eliminar</button></div></td></tr>)}</tbody></table>{!filtered.length && <div className="empty">{busy ? 'Cargando registros…' : search ? 'No hay resultados para esta búsqueda.' : 'No hay registros todavía. Crea uno para comenzar.'}</div>}</div>{cursor && <button className="secondary moreButton" disabled={busy} onClick={() => void load(cursor)}>Cargar más</button>}</section>
+        <section className="panel"><div className="panelHeading listHeading"><div><h2>Registros</h2><span>{filtered.length} {filtered.length === 1 ? 'registro' : 'registros'}</span></div><label className="searchBox"><Search size={16} /><input aria-label="Buscar registros" placeholder="Buscar…" value={search} onChange={e => setSearch(e.target.value)} /></label></div><div className="tableWrap"><table><thead><tr>{active.fields.slice(0, 4).map(f => <th key={f}>{fieldLabel(f)}</th>)}<th>Acciones</th></tr></thead><tbody>{pagedFiltered.map((item, i) => <tr key={itemId(item) || i}>{active.fields.slice(0, 4).map(f => <td key={f}>{renderFormattedCell(f, item, entityNames)}</td>)}<td><div className="rowActions">{active.key === 'project' && <><button type="button" onClick={() => { setTaskProject(itemId(item)); selectTab('tasks'); }}>Tareas</button><button type="button" onClick={() => { setAssignmentForm(old => ({ ...old, projectId: itemId(item) })); selectTab('assignments'); }}>Equipo</button></>}<button onClick={() => startEdit(item)}>Editar</button><button className="deleteAction" onClick={() => setConfirmDelete(item)}>Eliminar</button></div></td></tr>)}</tbody></table>{!filtered.length && <div className="empty">{busy ? 'Cargando registros…' : search ? 'No hay resultados para esta búsqueda.' : 'No hay registros todavía. Crea uno para comenzar.'}</div>}</div><PaginationBar page={page} totalItems={filtered.length} onPageChange={setPage} hasMore={Boolean(cursor)} busy={busy} onLoadMore={() => { if (cursor) void load(cursor); }} /></section>
       </> : specialView}
     </main></div>;
 }

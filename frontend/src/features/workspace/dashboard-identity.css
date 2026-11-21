@@ -5,9 +5,9 @@
   gap: 22px;
   margin: 0 0 22px;
   padding: 30px 34px;
-  border: 1px solid #385170;
-  border-radius: 22px;
-  background: linear-gradient(115deg, #172e47, #1e2942 70%, #2e2f4f);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 18px;
+  background: linear-gradient(125deg, #10192c 0%, #132038 65%, #162642 100%);
   overflow: hidden;
   box-shadow: var(--shadow-card);
 }
@@ -20,7 +20,7 @@
 .welcome-eyebrow { color: #7dd3fc; font-size: 11px; font-weight: 750; letter-spacing: .14em; }
 :root[data-theme="light"] .welcome-eyebrow { color: #0369a1; }
 
-.dashboard-welcome h2 { margin: 9px 0; color: #f8fafc; font-size: clamp(23px, 2.8vw, 33px); letter-spacing: -.035em; }
+.dashboard-welcome h2 { font-family: "Space Grotesk", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif; margin: 9px 0; color: #f8fafc; font-size: clamp(23px, 2.8vw, 33px); letter-spacing: -.03em; }
 :root[data-theme="light"] .dashboard-welcome h2 { color: #0f172a; }
 
 .dashboard-welcome p { margin: 0; color: #cbd5e1; line-height: 1.5; }

@@ -76,3 +76,10 @@ body{background:var(--space-0);color:var(--space-text)}
 @media(max-width:700px){.dashboard-secondary-grid>.quick-actions{width:100%;min-width:0;flex-shrink:1;grid-column:1/-1}}
 @media(max-width:700px){.dashboard-actions{display:grid;grid-template-columns:1fr}.dashboard-actions button{width:100%;justify-content:flex-start;font-size:12px}}
 .landing h1,.layout h1,.layout h2,.layout h3,.not-found h1{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+.flow-panel details{margin-top:12px}
+.flow-panel details pre{margin:10px 0 0;padding:14px;border-radius:10px;border:1px solid var(--pf-border,#2d3a55);white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-width:100%;overflow-x:auto;font-size:12px;line-height:1.5}
+.documents-form{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.documents-form select,.documents-form input[type="file"]{flex:1 1 220px;min-width:0}
+.pagination-bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;margin-top:14px;padding-top:12px;border-top:1px solid var(--pf-border,#2d3a55)}
+.pagination-info{font-size:12px;color:var(--pf-muted,#98a8c3)}
+.pagination-actions{display:flex;align-items:center;gap:8px}

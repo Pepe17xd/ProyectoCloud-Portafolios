@@ -1,28 +1,29 @@
-/* ProFiles workspace: dual-theme enterprise design system (Dark Default + Clean Slate Light Mode). */
+/* ProFiles workspace: Obsidian Precision default + Clean Slate Light Mode. */
 :root {
-  background: #0a1120;
+  background: #090d16;
 }
 body {
-  background: #0a1120;
+  background: #090d16;
 }
 
 .layout {
-  --bg-page: #0a1120;
+  --bg-page: #090d16;
   --ink: #f1f5f9;
-  --ink-heading: #ffffff;
+  --ink-heading: #f8fafc;
   --muted: #94a3b8;
-  --surface: #111c30;
-  --surface-elevated: #16243d;
-  --surface-hover: #1c2e4d;
-  --line: #233552;
-  --line-strong: #334e75;
-  --input-bg: #0b1426;
-  --primary-bg: linear-gradient(135deg, #2563eb, #4f46e5);
+  --surface: #101829;
+  --surface-elevated: #152036;
+  --surface-hover: #1b2944;
+  --line: rgba(148, 163, 184, 0.14);
+  --line-strong: rgba(148, 163, 184, 0.25);
+  --input-bg: #0a101d;
+  --primary-bg: #2563eb;
   --primary-text: #ffffff;
   --accent-kicker: #38bdf8;
-  --shadow-card: 0 12px 32px rgba(2, 8, 20, 0.32);
+  --shadow-card: 0 12px 32px rgba(2, 6, 23, 0.42);
   background: var(--bg-page);
   color: var(--ink);
+  font-family: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   transition: background .2s ease, color .2s ease;
 }
 
@@ -72,7 +73,7 @@ body {
 .layout > aside { position: sticky; top: 0; height: 100vh; width: 244px; padding: 26px 14px 16px; background: var(--surface); border-right: 1px solid var(--line); transition: width .2s ease; }
 .layout > main { max-width: 1560px; margin: 0 auto; padding: 36px clamp(20px, 4vw, 60px) 72px; }
 .layout main > header { border-bottom: 1px solid var(--line); padding-bottom: 24px; margin-bottom: 26px; }
-.layout main > header h1 { font-size: clamp(25px, 2.5vw, 34px); letter-spacing: -.035em; color: var(--ink-heading); }
+.layout main > header h1 { font-family: "Space Grotesk", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif; font-size: clamp(25px, 2.5vw, 34px); letter-spacing: -.032em; color: var(--ink-heading); }
 .layout main > header p { color: var(--muted); font-size: 14px; }
 .layout .eyebrow, .module-kicker { color: var(--accent-kicker); font-size: 10.5px; letter-spacing: .13em; font-weight: 800; text-transform: uppercase; }
 
@@ -83,7 +84,7 @@ body {
   box-shadow: var(--shadow-card);
   color: var(--ink);
 }
-.layout .panel h2 { color: var(--ink-heading); letter-spacing: -.02em; }
+.layout .panel h2 { font-family: "Space Grotesk", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif; color: var(--ink-heading); letter-spacing: -.02em; }
 .layout .panelHeading span { color: var(--muted); }
 
 /* Primary & Secondary Buttons */
@@ -305,6 +306,7 @@ body {
   width: min(640px, 100%);
   max-height: calc(100vh - 48px);
   overflow-y: auto;
+  overscroll-behavior: contain;
   margin: 0 !important;
   padding: 26px !important;
   background: var(--surface) !important;
@@ -356,8 +358,9 @@ body {
 .layout .tableWrap tr:hover { background: var(--surface-hover); }
 
 /* Status Badges */
+.layout .status-badge,
 .status-badge {
-  display: inline-flex;
+  display: inline-flex !important;
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
@@ -896,4 +899,29 @@ body {
   font-size: 11px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+.invite-code-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.layout .pagination-info {
+  font-size: 12.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.layout .pagination-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+:root[data-theme="light"] .layout .org-identity-banner {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+:root[data-theme="light"] .layout .org-identity-banner strong {
+  color: #0f172a;
+}
+:root[data-theme="light"] .layout .org-identity-banner p {
+  color: #475569;
 }

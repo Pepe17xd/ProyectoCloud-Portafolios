@@ -1,0 +1,208 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "ProFiles CloudPortfolio Multi-Tenant SaaS API",
+    "version": "1.0.0",
+    "description": "Especificación OpenAPI (Swagger) de los microservicios multi-tenant de ProFiles. Todas las rutas protegidas requieren un JWT de Amazon Cognito con el claim custom:tenantId. Cada microservicio tiene su propio API Gateway HTTP API y su tabla DynamoDB particionada por pk = TENANT#<tenantId>."
+  },
+  "servers": [
+    {
+      "url": "https://dhtdt3ikih.execute-api.us-east-1.amazonaws.com",
+      "description": "Portfolio Service (Portafolios y Objetivos)"
+    },
+    {
+      "url": "https://ezkvpmfn4a.execute-api.us-east-1.amazonaws.com",
+      "description": "Project Service (Proyectos, Tareas, Documentos S3, Reportes)"
+    },
+    {
+      "url": "https://0vczniub1d.execute-api.us-east-1.amazonaws.com",
+      "description": "Budget Service (Presupuestos y Gastos)"
+    },
+    {
+      "url": "https://85igbqescd.execute-api.us-east-1.amazonaws.com",
+      "description": "Resource Service (Recursos y Asignaciones)"
+    },
+    {
+      "url": "https://7imzdk598c.execute-api.us-east-1.amazonaws.com",
+      "description": "Priority Service (Prioridades, Ranking y Decision Lab)"
+    },
+    {
+      "url": "https://klfsruwuya.execute-api.us-east-1.amazonaws.com",
+      "description": "Identity Service (Usuarios, Tenants, Notificaciones y Automatizaciones)"
+    }
+  ],
+  "security": [{ "CognitoJWT": [] }],
+  "paths": {
+    "/portfolios": {
+      "get": { "tags": ["Portfolio Service"], "summary": "Listar portafolios del tenant", "responses": { "200": { "description": "Lista de portafolios" } } },
+      "post": {
+        "tags": ["Portfolio Service"],
+        "summary": "Crear portafolio en DynamoDB",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string", "example": "Portafolio Demo" },
+                  "description": { "type": "string", "example": "Prueba en vivo" },
+                  "status": { "type": "string", "example": "ACTIVE" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Portafolio creado" } }
+      }
+    },
+    "/portfolios/{id}": {
+      "get": {
+        "tags": ["Portfolio Service"],
+        "summary": "Obtener portafolio (devuelve 404 si pertenece a otro tenant)",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Portafolio encontrado" }, "404": { "description": "No encontrado en el tenant" } }
+      },
+      "patch": {
+        "tags": ["Portfolio Service"],
+        "summary": "Modificar portafolio en DynamoDB",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string", "example": "Portafolio Demo Editado" },
+                  "description": { "type": "string", "example": "Actualizado desde Swagger" },
+                  "status": { "type": "string", "enum": ["ACTIVE", "PAUSED", "COMPLETED"], "example": "PAUSED" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Portafolio actualizado" } }
+      },
+      "delete": {
+        "tags": ["Portfolio Service"],
+        "summary": "Eliminar portafolio de DynamoDB",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Portafolio eliminado" } }
+      }
+    },
+    "/projects": {
+      "get": { "tags": ["Project Service"], "summary": "Listar proyectos del tenant", "responses": { "200": { "description": "Lista paginada de proyectos" } } },
+      "post": {
+        "tags": ["Project Service"],
+        "summary": "Crear proyecto (DynamoDB + evento ProjectCreated en SNS)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "portfolioId", "status"],
+                "properties": {
+                  "name": { "type": "string", "example": "Migración Cloud 2026" },
+                  "portfolioId": { "type": "string" },
+                  "status": { "type": "string", "enum": ["ACTIVE", "PAUSED", "COMPLETED"], "example": "ACTIVE" },
+                  "startDate": { "type": "string", "format": "date" },
+                  "endDate": { "type": "string", "format": "date" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Proyecto creado" } }
+      }
+    },
+    "/projects/{id}": {
+      "get": {
+        "tags": ["Project Service"],
+        "summary": "Obtener proyecto del tenant (404 si pertenece a otro tenant)",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Proyecto encontrado" }, "404": { "description": "No encontrado en el tenant" } }
+      },
+      "patch": {
+        "tags": ["Project Service"],
+        "summary": "Modificar proyecto en DynamoDB",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Proyecto actualizado" } }
+      },
+      "delete": {
+        "tags": ["Project Service"],
+        "summary": "Eliminar proyecto de DynamoDB",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Proyecto eliminado" } }
+      }
+    },
+    "/documents": {
+      "get": { "tags": ["Project Service - S3"], "summary": "Listar documentos registrados en DynamoDB", "responses": { "200": { "description": "Lista de documentos" } } },
+      "post": {
+        "tags": ["Project Service - S3"],
+        "summary": "Registrar documento en DynamoDB y generar uploadUrl prefirmada de S3",
+        "responses": { "201": { "description": "Metadata guardada y uploadUrl prefirmada" } }
+      }
+    },
+    "/documents/{id}": {
+      "get": {
+        "tags": ["Project Service - S3"],
+        "summary": "Obtener downloadUrl prefirmada de S3",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "downloadUrl prefirmada" } }
+      }
+    },
+    "/budgets": {
+      "get": { "tags": ["Budget Service"], "summary": "Listar presupuestos del tenant", "responses": { "200": { "description": "Lista de presupuestos" } } },
+      "post": { "tags": ["Budget Service"], "summary": "Crear presupuesto", "responses": { "201": { "description": "Presupuesto creado" } } }
+    },
+    "/expenses": {
+      "get": { "tags": ["Budget Service"], "summary": "Listar gastos del tenant", "responses": { "200": { "description": "Lista de gastos" } } },
+      "post": { "tags": ["Budget Service"], "summary": "Registrar gasto y actualizar saldo", "responses": { "201": { "description": "Gasto registrado" } } }
+    },
+    "/resources": {
+      "get": { "tags": ["Resource Service"], "summary": "Listar recursos del tenant", "responses": { "200": { "description": "Lista de recursos" } } },
+      "post": { "tags": ["Resource Service"], "summary": "Crear recurso", "responses": { "201": { "description": "Recurso creado" } } }
+    },
+    "/assignments": {
+      "get": { "tags": ["Resource Service"], "summary": "Listar asignaciones", "responses": { "200": { "description": "Lista de asignaciones" } } },
+      "post": { "tags": ["Resource Service"], "summary": "Asignar recurso a proyecto (publica ResourceAssigned en SNS)", "responses": { "201": { "description": "Asignación creada" } } }
+    },
+    "/priorities": {
+      "get": { "tags": ["Priority Service"], "summary": "Listar prioridades", "responses": { "200": { "description": "Lista de prioridades" } } },
+      "post": { "tags": ["Priority Service"], "summary": "Crear prioridad", "responses": { "201": { "description": "Prioridad creada" } } }
+    },
+    "/priorities/recalculate": {
+      "post": { "tags": ["Priority Service"], "summary": "Recalcular ranking", "responses": { "200": { "description": "Ranking recalculado" } } }
+    },
+    "/users": {
+      "get": { "tags": ["Identity Service"], "summary": "Listar usuarios del tenant", "responses": { "200": { "description": "Lista de usuarios" } } }
+    },
+    "/notifications/inbox": {
+      "get": { "tags": ["Identity Service"], "summary": "Consultar buzón interno alimentado por SQS", "responses": { "200": { "description": "Notificaciones del usuario" } } }
+    },
+    "/flows": {
+      "get": { "tags": ["Identity Service"], "summary": "Listar automatizaciones del tenant", "responses": { "200": { "description": "Lista de automatizaciones" } } },
+      "post": { "tags": ["Identity Service"], "summary": "Crear automatización", "responses": { "201": { "description": "Automatización creada" } } }
+    },
+    "/flows/{id}/run": {
+      "post": {
+        "tags": ["Identity Service"],
+        "summary": "Ejecutar automatización manualmente",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Ejecución completada" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "CognitoJWT": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  }
+}

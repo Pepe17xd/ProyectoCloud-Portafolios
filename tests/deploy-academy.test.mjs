@@ -120,3 +120,16 @@ test('no Meta, WhatsApp or Secrets Manager dependency remains in the deployment 
     assert.doesNotMatch(readFileSync(new URL(`../${dir}/serverless.yml`, import.meta.url), 'utf8'), /whatsapp|secretsmanager|webhooks\/meta/i);
   }
 });
+test('frontend-only mode skips backend deployments and publishes Amplify using live stack outputs', async () => {
+  const { io, state } = fixture();
+  const result = await orchestrate(io, { region: 'us-east-1', frontendOnly: true });
+  assert.equal(state.deployments.length, 0);
+  assert.equal(state.builds.length, 1);
+  assert.equal(state.builds[0].VITE_AUTH_MODE, 'cognito');
+  assert.equal(state.builds[0].VITE_COGNITO_USER_POOL_ID, 'pool');
+  assert.equal(state.builds[0].VITE_COGNITO_CLIENT_ID, 'client');
+  for (const name of services) assert.equal(state.builds[0][`VITE_API_${name.toUpperCase()}`], `https://${name}.example`);
+  assert.deepEqual(state.calls.filter(x => ['build', 'zip', 'upload', 'cleanup'].includes(x)), ['build', 'zip', 'upload', 'cleanup']);
+  assert.ok(state.calls.includes('amplify:start-deployment'));
+  assert.equal(result.frontend, 'https://main.example.amplifyapp.com');
+});

@@ -12,13 +12,18 @@ type ModalProps = {
 export default function Modal({ open, title, subtitle, onClose, children }: ModalProps) {
   useEffect(() => {
     if (!open) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         onClose();
       }
     };
     document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, [open, onClose]);
 
   if (!open) return null;
@@ -46,7 +51,7 @@ export default function Modal({ open, title, subtitle, onClose, children }: Moda
             type="button"
             className="iconButton modal-close-btn"
             onClick={onClose}
-            title="Cancelar edición"
+            title="Cerrar"
             aria-label="Cerrar ventana"
           >
             <X size={18} />

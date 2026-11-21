@@ -95,7 +95,7 @@ for (const [label, viewport] of [['escritorio', { width: 1440, height: 900 }], [
     await page.screenshot({ path: test.info().outputPath(`dashboard-${label}.png`), fullPage: true });
     await page.goto('/app/notifications');
     await expect(page.getByText('Pendiente de confirmar')).toBeVisible();
-    await expect(page.getByText('Amazon SNS activo', { exact:true })).toBeVisible();
+    await expect(page.getByText('Disponible', { exact:true })).toBeVisible();
     await expect(page.getByText('a***@demo.local')).toBeVisible();
     await page.screenshot({ path: test.info().outputPath(`email-${label}.png`), fullPage: true });
   });

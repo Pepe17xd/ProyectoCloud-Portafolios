@@ -1,14 +1,14 @@
 .layout.workspace-layout {
-  --nav-night: #0d1626;
+  --nav-night: rgba(9, 13, 22, 0.92);
   --nav-sky: #38bdf8;
   --nav-lavender: #c4b5fd;
   --nav-cream: #f8fafc;
-  --nav-coral: #fb7185;
-  --nav-border: #1e293b;
-  --nav-hover: #17253b;
-  --nav-active: #1e324d;
+  --nav-coral: #38bdf8;
+  --nav-border: rgba(148, 163, 184, 0.14);
+  --nav-hover: #152036;
+  --nav-active: #1a2944;
   --nav-text: #cbd5e1;
-  --nav-dropdown-bg: #111d32;
+  --nav-dropdown-bg: #101829;
   display: block;
   min-height: 100vh;
 }
@@ -56,9 +56,10 @@
   padding: 0;
   background: transparent;
   color: var(--nav-cream);
+  font-family: "Space Grotesk", "Plus Jakarta Sans", sans-serif;
   font-size: 20px !important;
-  font-weight: 750 !important;
-  letter-spacing: -.04em;
+  font-weight: 700 !important;
+  letter-spacing: -.03em;
 }
 .topbar-navigation { display: flex; align-items: center; gap: 4px; flex: 1; }
 .topbar-group { position: relative; }
@@ -203,37 +204,19 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.topbar-profile-meta-row {
-  margin-top: 4px;
-}
-.topbar-role-badge {
+.topbar-profile-org {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 99px;
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: .03em;
-  text-transform: uppercase;
-  background: rgba(99, 102, 241, 0.16);
-  color: #818cf8;
-  border: 1px solid rgba(99, 102, 241, 0.32);
+  gap: 5px;
+  margin-top: 4px;
+  color: var(--nav-sky);
+  font-size: 11.5px;
+  font-weight: 600;
 }
-.topbar-role-badge.role-admin {
-  background: rgba(245, 158, 11, 0.16);
-  color: #fbbf24;
-  border-color: rgba(245, 158, 11, 0.32);
-}
-.topbar-role-badge.role-manager {
-  background: rgba(14, 165, 233, 0.16);
-  color: #38bdf8;
-  border-color: rgba(14, 165, 233, 0.32);
-}
-.topbar-role-badge.role-viewer {
-  background: rgba(148, 163, 184, 0.16);
-  color: #94a3b8;
-  border-color: rgba(148, 163, 184, 0.32);
+.topbar-profile-org span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .topbar-profile-tenant-card {
   margin: 10px 0 6px;

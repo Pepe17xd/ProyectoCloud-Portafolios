@@ -307,7 +307,7 @@ def expense(b: ExpenseIn, authorization: str | None = Header(None), a=Depends(ac
                 "Update": {
                     "TableName": table.name,
                     "Key": serialize(key(a["tenantId"], b.budgetId)),
-                    "UpdateExpression": "SET #spent = if_not_exists(#spent, :zero) + :amount, #balance = #allocated - if_not_exists(#spent, :zero) - :amount, #updatedAt = :updatedAt",
+                    "UpdateExpression": "SET #spent = if_not_exists(#spent, :zero) + :amount, #balance = if_not_exists(#balance, #allocated) - :amount, #updatedAt = :updatedAt",
                     "ConditionExpression": "attribute_exists(pk) AND #entityType = :budget",
                     "ExpressionAttributeNames": {"#spent": "spent", "#balance": "balance", "#allocated": "allocated", "#updatedAt": "updatedAt", "#entityType": "entityType"},
                     "ExpressionAttributeValues": serialize({":zero": Decimal(0), ":amount": Decimal(str(b.amount)), ":updatedAt": now(), ":budget": "Budget"}),
