@@ -16,13 +16,16 @@ test('brand keeps the original folder SVG and has an opt-in mascot slot only', (
   assert.match(ignored, /^frontend\/public\/profiles-mascot\.png$/m);
 });
 
-test('public landing explains the team, purpose, organization spaces, MIT and repository', () => {
+test('public landing presents the product experience without rendering Foli', () => {
   const landing = read('frontend/src/features/landing/Landing.tsx');
   assert.match(landing, /id="equipo"/);
   assert.match(landing, /CloudComputin-utec2026-02/);
   assert.match(landing, /id="organizaciones"/);
-  assert.match(landing, /permisos de cada persona/);
+  assert.match(landing, /permisos de cada usuario/);
   assert.match(landing, /seguridad efectiva también depende/);
+  assert.match(landing, /FloatingDashboard/);
+  assert.match(landing, /InteractiveDecisionDeck/);
+  assert.doesNotMatch(landing, /FoliMascot|landing-foli|profiles-mascot/);
   assert.match(landing, /Software libre · Licencia MIT/);
   assert.match(landing, /github\.com\/Pepe17xd\/ProyectoCloud-Portafolios/);
   assert.match(landing, /href="\/register"/);

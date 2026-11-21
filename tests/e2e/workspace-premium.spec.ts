@@ -68,7 +68,7 @@ for (const [label, viewport] of [['escritorio', { width: 1440, height: 900 }], [
     const publicContext = await browser.newContext({ viewport });
     const publicPage = await publicContext.newPage();
     await publicPage.goto('/');
-    await expect(publicPage.getByRole('link', { name: /crear una organización/i })).toBeVisible();
+    await expect(publicPage.getByRole('link', { name: /crear una organización/i }).first()).toBeVisible();
     await publicPage.screenshot({ path: test.info().outputPath(`landing-${label}.png`), fullPage: true });
     if (viewport.width < 980) {
       const menu = publicPage.locator('.landing-menu-toggle');
@@ -77,11 +77,11 @@ for (const [label, viewport] of [['escritorio', { width: 1440, height: 900 }], [
     await publicPage.getByRole('link', { name: 'Quiénes somos' }).click();
     await expect(publicPage).toHaveURL(/#equipo$/);
     await expect(publicPage.getByText('CloudComputin-utec2026-02')).toBeVisible();
-    await expect(publicPage.locator('.landing-foli')).toHaveJSProperty('naturalWidth', 768);
+    await expect(publicPage.locator('.landing-foli')).toHaveCount(0);
     if (viewport.width < 980) await publicPage.locator('.landing-menu-toggle').click();
     await publicPage.getByRole('link', { name: 'Organizaciones' }).click();
     await expect(publicPage).toHaveURL(/#organizaciones$/);
-    await expect(publicPage.getByRole('heading', { name: /Cada equipo trabaja desde su propio espacio/i })).toBeVisible();
+    await expect(publicPage.getByRole('heading', { name: /Cada organización, su propio espacio/i })).toBeVisible();
     await publicContext.close();
     await page.setViewportSize(viewport);
     await page.route('**/mock-api/identity/notifications/**', route => {
