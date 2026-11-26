@@ -1,12 +1,35 @@
 /* ProFiles Obsidian Precision: Auth unified with Landing and Workspace */
 .auth-page {
   min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  position: relative;
   background: #090d16;
   color: #f8fafc;
   font-family: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 .auth-backdrop {
+  display: none;
+}
+
+.auth-backdrop:after {
+  content: none;
+}
+
+.auth-side {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  min-height: 100vh;
+  padding: 36px clamp(28px, 6vw, 72px);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 24px;
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
   background:
     radial-gradient(circle at 20% 15%, rgba(56, 189, 248, 0.12), transparent 46%),
     radial-gradient(circle at 80% 82%, rgba(99, 102, 241, 0.1), transparent 48%),
@@ -17,12 +40,19 @@
   border-right: 1px solid rgba(148, 163, 184, 0.14);
 }
 
-.auth-backdrop:after {
-  content: none;
+.auth-side-content {
+  width: 100%;
+  max-width: 480px;
+  margin: auto;
+  position: relative;
 }
 
-.auth-side {
-  padding: 36px 9%;
+.auth-side-art {
+  height: 210px;
+  position: relative;
+  margin-top: 30px;
+  width: 100%;
+  max-width: 440px;
 }
 
 .auth-side .brand {
@@ -69,9 +99,10 @@
 
 .auth-art-card {
   position: absolute;
-  left: 56px;
+  left: clamp(8px, 3vw, 48px);
   top: 24px;
-  min-width: 256px;
+  width: min(286px, calc(100% - 20px));
+  min-width: 0;
   padding: 16px 18px;
   border-radius: 14px;
   background: #101829;
@@ -143,13 +174,24 @@
 }
 
 .auth-main {
+  width: 100%;
+  min-width: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  z-index: 1;
   background:
     radial-gradient(ellipse at 72% 14%, rgba(56, 189, 248, 0.08), transparent 46%),
     #090d16;
-  padding: 54px 28px 40px;
+  padding: 64px 28px 40px;
 }
 
 .auth-main .auth-back {
+  position: absolute;
+  top: 32px;
+  left: 36px;
   color: #94a3b8;
   font-size: 13px;
   font-weight: 600;
@@ -460,17 +502,47 @@
   box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.28);
 }
 
-@media(max-width:600px) {
+@media(max-width:900px) {
+  .auth-page {
+    display: block;
+  }
+  .auth-side {
+    display: none;
+  }
   .auth-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0 0 auto;
+    width: 100%;
     height: 76px;
     background: #0c1322;
     border-right: 0;
     border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    z-index: 2;
   }
+  .auth-main {
+    min-height: 100vh;
+    padding: 108px 24px 40px;
+    align-items: flex-start;
+  }
+  .auth-main .auth-back {
+    position: fixed;
+    top: 26px;
+    left: 22px;
+    z-index: 3;
+    color: #f8fafc;
+  }
+  .auth-mobile-brand {
+    display: block;
+    margin-bottom: 24px;
+  }
+}
+
+@media(max-width:600px) {
   .auth-main {
     padding: 96px 16px 32px;
   }
-  .auth-back {
+  .auth-main .auth-back {
     top: 26px;
     left: 18px;
   }
