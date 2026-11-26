@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createEmailRuntime, shouldRetryEmailRecord, parseQueueBody, renderEmail, maskEmail, CONSENT_VERSION, FLOW_EVENT_MAP, EMAIL_EVENT_TYPES } from '../services/identity-service/email-notifications.mjs';
+import { createEmailRuntime, shouldRetryEmailRecord, parseQueueBody, renderEmail, maskEmail, isWithinAllowedHours, CONSENT_VERSION, FLOW_EVENT_MAP, EMAIL_EVENT_TYPES } from '../services/identity-service/email-notifications.mjs';
+import { notificationsApi, deliverDomainEventToInbox } from '../services/identity-service/handler.mjs';
 
 // Minimal in-memory DynamoDB document client double (Get/Put/Query/Update by pk+sk).
 function fakeDb(seed = []) {
@@ -150,4 +151,133 @@ test('mappings, rendering and masking are stable', () => {
   const mail = renderEmail({ eventType: 'ReminderDue', title: 'Línea 1\nLínea 2', parameters: ['Pagar proveedor'] });
   assert.doesNotMatch(mail.subject, /\n/); assert.match(mail.message, /Recordatorio: Pagar proveedor/);
   assert.equal(maskEmail('ana@example.com'), 'a***@example.com'); assert.equal(maskEmail('x'), null);
+});
+
+test('pending-confirmation subscription allows resending SNS confirmation after 30s cooldown', async () => {
+  let clock = 1_700_000_000_000;
+  const db = fakeDb([profile]);
+  const sns = fakeSns();
+  const rt = createEmailRuntime({ db, table: 't', sns, domainTopicArn: 'arn:domain', emailTopicArn: 'arn:email', mode: 'sns-email', now: () => new Date(clock) });
+  const first = await rt.handle(event({ consent: true, consentVersion: CONSENT_VERSION }), actor, 'POST', '/notifications/email/subscribe');
+  assert.equal(first.statusCode, 202);
+  const tooSoon = await rt.handle(event({ consent: true, consentVersion: CONSENT_VERSION }), actor, 'POST', '/notifications/email/subscribe');
+  assert.equal(tooSoon.statusCode, 429);
+  clock += 35_000;
+  const resend = await rt.handle(event({ consent: true, consentVersion: CONSENT_VERSION }), actor, 'POST', '/notifications/email/subscribe');
+  assert.equal(resend.statusCode, 202);
+  assert.match(JSON.parse(resend.body).message, /Reenviamos/);
+  assert.equal(sns.sent.filter((c) => c.name === 'SubscribeCommand').length, 2);
+});
+
+test('internal notification preferences merge defaults after email subscription and persist updates', async () => {
+  const db = fakeDb([profile]);
+  const sns = fakeSns();
+  const emailRuntime = createEmailRuntime({ db, table: 't', sns, domainTopicArn: 'arn:domain', emailTopicArn: 'arn:email', mode: 'sns-email' });
+  await emailRuntime.handle(event({ consent: true, consentVersion: CONSENT_VERSION }), actor, 'POST', '/notifications/email/subscribe');
+
+  const getRes = await notificationsApi({}, actor, 'GET', '/notifications/preferences', { db, table: 't', emailRuntime });
+  assert.equal(getRes.statusCode, 200);
+  const loaded = JSON.parse(getRes.body);
+  assert.equal(loaded.enabled, false);
+  assert.equal(loaded.frequency, 'immediate');
+  assert.deepEqual(loaded.allowedHours, { start: '08:00', end: '18:00' });
+  assert.deepEqual(loaded.alertTypes, []);
+
+  const putRes = await notificationsApi(
+    event({ enabled: true, timezone: 'America/Lima', allowedHours: { start: '08:00', end: '18:00' }, alertTypes: ['ProjectCreated', 'BudgetThresholdExceeded'] }),
+    actor,
+    'PUT',
+    '/notifications/preferences',
+    { db, table: 't', emailRuntime },
+  );
+  assert.equal(putRes.statusCode, 200);
+  const saved = JSON.parse((await notificationsApi({}, actor, 'GET', '/notifications/preferences', { db, table: 't', emailRuntime })).body);
+  assert.equal(saved.enabled, true);
+  assert.equal(saved.emailStatus, 'pending-confirmation');
+  assert.deepEqual(saved.alertTypes, ['ProjectCreated', 'BudgetThresholdExceeded']);
+});
+
+test('deliverDomainEventToInbox delivers idempotently only to subscribed users with enabled inbox', async () => {
+  const db = fakeDb([
+    { pk: `TENANT#${tenantId}`, sk: 'NOTIFY#PREFERENCES#u1', enabled: true, alertTypes: ['ProjectCreated'] },
+    { pk: `TENANT#${tenantId}`, sk: 'NOTIFY#PREFERENCES#u2', enabled: false, alertTypes: ['ProjectCreated'] },
+    { pk: `TENANT#${tenantId}`, sk: 'NOTIFY#PREFERENCES#u3', enabled: true, alertTypes: ['ResourceAssigned'] },
+  ]);
+  const ev = { eventId: 'evt-1', eventType: 'ProjectCreated', tenantId, entityId: 'proj-1', occurredAt: '2026-11-25T10:00:00Z', payload: { name: 'Portal Web' } };
+  const first = await deliverDomainEventToInbox(ev, { db, table: 't' });
+  const second = await deliverDomainEventToInbox(ev, { db, table: 't' });
+  assert.equal(first.delivered, 1);
+  assert.equal(second.delivered, 0);
+  assert.ok(db.items.has(`TENANT#${tenantId}|NOTIFY#DELIVERY#u1#domain-evt-1`));
+  assert.equal(db.items.get(`TENANT#${tenantId}|NOTIFY#DELIVERY#u1#domain-evt-1`).title, 'Proyecto creado: Portal Web');
+  assert.equal(db.items.has(`TENANT#${tenantId}|NOTIFY#DELIVERY#u2#domain-evt-1`), false);
+  assert.equal(db.items.has(`TENANT#${tenantId}|NOTIFY#DELIVERY#u3#domain-evt-1`), false);
+});
+
+test('email schedule supports anytime (24/7), custom hours, overnight windows, and validation', async () => {
+  // 2026-11-25T15:30:00Z = 10:30 America/Lima (-05:00)
+  let current = new Date('2026-11-25T15:30:00Z');
+  const db = fakeDb([profile]);
+  const sns = fakeSns();
+  const rt = createEmailRuntime({ db, table: 't', sns, domainTopicArn: 'arn:domain', emailTopicArn: 'arn:email', mode: 'sns-email', now: () => current });
+  await rt.handle(event({ consent: true, consentVersion: CONSENT_VERSION }), actor, 'POST', '/notifications/email/subscribe');
+
+  const invalidHours = await rt.handle(event({ alertTypes: ['ReminderDue'], anytime: false, allowedHours: { start: '99:00', end: '17:00' } }), actor, 'PUT', '/notifications/email/preferences');
+  assert.equal(invalidHours.statusCode, 400);
+
+  const invalidTz = await rt.handle(event({ alertTypes: ['ReminderDue'], anytime: false, timezone: 'Mars/Phobos' }), actor, 'PUT', '/notifications/email/preferences');
+  assert.equal(invalidTz.statusCode, 400);
+
+  const saved = await rt.handle(event({ alertTypes: ['ReminderDue'], anytime: false, allowedHours: { start: '09:00', end: '17:00' }, timezone: 'America/Lima' }), actor, 'PUT', '/notifications/email/preferences');
+  assert.equal(saved.statusCode, 200);
+  const fetched = JSON.parse((await rt.handle({}, actor, 'GET', '/notifications/email')).body);
+  assert.equal(fetched.anytime, false);
+  assert.deepEqual(fetched.allowedHours, { start: '09:00', end: '17:00' });
+  assert.equal(fetched.timezone, 'America/Lima');
+
+  // Inside 09:00-17:00 Lima (10:30)
+  assert.equal(await rt.enqueue({ tenantId, userId, eventType: 'ReminderDue', idempotencyKey: 'win-in', title: 'Dentro' }), true);
+  // Outside 09:00-17:00 Lima (2026-11-26T01:30:00Z = 20:30 Lima)
+  current = new Date('2026-11-26T01:30:00Z');
+  assert.equal(await rt.enqueue({ tenantId, userId, eventType: 'ReminderDue', idempotencyKey: 'win-out', title: 'Fuera' }), false);
+
+  // Overnight window (22:00-06:00) and anytime (24/7)
+  assert.equal(isWithinAllowedHours({ anytime: false, allowedHours: { start: '22:00', end: '06:00' }, timezone: 'America/Lima' }, new Date('2026-11-26T04:00:00Z')), true); // 23:00 Lima
+  assert.equal(isWithinAllowedHours({ anytime: false, allowedHours: { start: '22:00', end: '06:00' }, timezone: 'America/Lima' }, new Date('2026-11-25T15:30:00Z')), false); // 10:30 Lima
+  await rt.handle(event({ alertTypes: ['ReminderDue'], anytime: true }), actor, 'PUT', '/notifications/email/preferences');
+  assert.equal(await rt.enqueue({ tenantId, userId, eventType: 'ReminderDue', idempotencyKey: 'win-24-7', title: 'Siempre' }), true);
+});
+
+test('internal inbox preferences persist anytime (24/7) option', async () => {
+  const db = fakeDb([profile]);
+  const sns = fakeSns();
+  const emailRuntime = createEmailRuntime({ db, table: 't', sns, domainTopicArn: 'arn:domain', emailTopicArn: 'arn:email', mode: 'sns-email' });
+  const putRes = await notificationsApi(
+    event({ enabled: true, anytime: true, timezone: 'America/Lima', alertTypes: ['ProjectCreated'] }),
+    actor,
+    'PUT',
+    '/notifications/preferences',
+    { db, table: 't', emailRuntime },
+  );
+  assert.equal(putRes.statusCode, 200);
+  const loaded = JSON.parse((await notificationsApi({}, actor, 'GET', '/notifications/preferences', { db, table: 't', emailRuntime })).body);
+  assert.equal(loaded.enabled, true);
+  assert.equal(loaded.anytime, true);
+  assert.deepEqual(loaded.allowedHours, { start: '00:00', end: '23:59' });
+});
+
+test('enqueue maps flow event names (weekly-summary, risk-alert) via FLOW_EVENT_MAP', async () => {
+  const { rt, sns } = runtime();
+  await rt.handle(event({ consent: true, consentVersion: CONSENT_VERSION }), actor, 'POST', '/notifications/email/subscribe');
+  await rt.handle(event({ alertTypes: ['WeeklySummary', 'RiskAlert'] }), actor, 'PUT', '/notifications/email/preferences');
+
+  assert.equal(await rt.enqueue({ tenantId, userId, eventType: 'weekly-summary', idempotencyKey: 'flow-ws-1', title: 'Resumen', parameters: ['2'] }), true);
+  const pub1 = sns.sent.filter((c) => c.name === 'PublishCommand').at(-1).input;
+  assert.equal(pub1.MessageAttributes.eventType.StringValue, 'WeeklySummary');
+  assert.equal(JSON.parse(pub1.Message).eventType, 'WeeklySummary');
+
+  assert.equal(await rt.enqueue({ tenantId, userId, eventType: 'risk-alert', idempotencyKey: 'flow-ra-1', title: 'Alerta', parameters: ['1'] }), true);
+  const pub2 = sns.sent.filter((c) => c.name === 'PublishCommand').at(-1).input;
+  assert.equal(pub2.MessageAttributes.eventType.StringValue, 'RiskAlert');
+  assert.equal(JSON.parse(pub2.Message).eventType, 'RiskAlert');
 });

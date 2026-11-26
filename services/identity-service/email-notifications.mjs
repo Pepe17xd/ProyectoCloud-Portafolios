@@ -17,8 +17,44 @@ export const EMAIL_EVENT_TYPES = ['ReminderDue', 'AutomationReport', 'RiskAlert'
 export const FLOW_EVENT_MAP = { reminder: 'ReminderDue', automation: 'AutomationReport', 'risk-alert': 'RiskAlert', 'weekly-summary': 'WeeklySummary' };
 const eventTypes = new Set(EMAIL_EVENT_TYPES);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const DEFAULT_EMAIL_HOURS = { start: '08:00', end: '18:00' };
+const DEFAULT_TIMEZONE = 'America/Lima';
 const TERMINAL_CODES = ['INVALID_JOB', 'NOT_ALLOWED', 'PROVIDER_DISABLED', 'PROVIDER_REJECTED'];
 const SNS_REJECTIONS = ['InvalidParameterException', 'InvalidParameterValueException', 'AuthorizationErrorException', 'NotFoundException', 'EndpointDisabledException'];
+
+const toMinutes = (hhmm) => {
+  const [h, m] = String(hhmm).split(':').map(Number);
+  return h * 60 + m;
+};
+
+export function isWithinAllowedHours({ anytime = true, allowedHours, timezone = DEFAULT_TIMEZONE } = {}, currentDate = new Date()) {
+  if (anytime !== false || !allowedHours?.start || !allowedHours?.end) return true;
+  if (!TIME_RE.test(allowedHours.start) || !TIME_RE.test(allowedHours.end)) return true;
+  const startMin = toMinutes(allowedHours.start);
+  const endMin = toMinutes(allowedHours.end);
+  if (startMin === endMin) return true;
+  let formatter;
+  try {
+    formatter = new Intl.DateTimeFormat('en-GB', { timeZone: timezone || DEFAULT_TIMEZONE, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  } catch {
+    formatter = new Intl.DateTimeFormat('en-GB', { timeZone: DEFAULT_TIMEZONE, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  }
+  const parts = Object.fromEntries(formatter.formatToParts(currentDate).map((p) => [p.type, p.value]));
+  const nowMin = Number(parts.hour) * 60 + Number(parts.minute);
+  if (startMin < endMin) return nowMin >= startMin && nowMin <= endMin;
+  return nowMin >= startMin || nowMin <= endMin;
+}
+
+const resolveEmailSchedule = (prefs = {}) => ({
+  anytime: prefs.emailAnytime !== false,
+  allowedHours: TIME_RE.test(prefs.emailAllowedHours?.start || '') && TIME_RE.test(prefs.emailAllowedHours?.end || '')
+    ? prefs.emailAllowedHours
+    : DEFAULT_EMAIL_HOURS,
+  timezone: typeof prefs.emailTimezone === 'string' && prefs.emailTimezone
+    ? prefs.emailTimezone
+    : (typeof prefs.timezone === 'string' && prefs.timezone ? prefs.timezone : DEFAULT_TIMEZONE),
+});
 
 const ok = (statusCode, data) => ({ statusCode, headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) });
 const fail = (statusCode, message) => ok(statusCode, { error: message });
@@ -59,7 +95,10 @@ export function renderEmail(job) {
 export function createEmailRuntime({ db, table, sns, domainTopicArn = '', emailTopicArn = '', mode = 'disabled', now = () => new Date() }) {
   const getPreference = async (tenantId, userId) => (await db.send(new GetCommand({ TableName: table, Key: prefKey(tenantId, userId) }))).Item || {};
   const available = () => mode === 'local' || (mode === 'sns-email' && Boolean(emailTopicArn));
-  const allowed = (prefs, eventType) => prefs.emailConsent === true && !prefs.consentRevokedAt && (prefs.emailAlertTypes || []).includes(eventType);
+  const allowed = (prefs, eventType) => {
+    if (prefs.emailConsent !== true || prefs.consentRevokedAt || !(prefs.emailAlertTypes || []).includes(eventType)) return false;
+    return isWithinAllowedHours(resolveEmailSchedule(prefs), now());
+  };
 
   async function refreshStatus(tenantId, userId, prefs) {
     if (mode !== 'sns-email' || prefs.emailStatus !== 'pending-confirmation' || !prefs.emailSubscriptionArn) return prefs;
@@ -82,10 +121,14 @@ export function createEmailRuntime({ db, table, sns, domainTopicArn = '', emailT
       const prefs = await refreshStatus(tenantId, userId, loaded);
       const history = await db.send(new QueryCommand({ TableName: table, KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)', ExpressionAttributeValues: { ':pk': key.pk, ':prefix': `NOTIFY#EMAIL#${userId}#` }, Limit: 25 }));
       const status = prefs.consentRevokedAt ? 'revoked' : prefs.emailConsent !== true ? 'not-configured' : prefs.emailStatus || 'inactive';
+      const schedule = resolveEmailSchedule(prefs);
       return ok(200, {
         status, providerAvailable: available(), channel: mode === 'sns-email' ? 'sns-email' : mode === 'local' ? 'local' : 'disabled',
         email: maskEmail(prefs.emailAddress), consent: prefs.emailConsent === true, consentAt: prefs.emailConsentAt || null, consentVersion: prefs.emailConsentVersion || null,
         alertTypes: prefs.emailAlertTypes || [],
+        anytime: schedule.anytime,
+        allowedHours: schedule.allowedHours,
+        timezone: schedule.timezone,
         items: (history.Items || []).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))),
       });
     }
@@ -96,7 +139,8 @@ export function createEmailRuntime({ db, table, sns, domainTopicArn = '', emailT
       const profile = (await db.send(new GetCommand({ TableName: table, Key: { pk: key.pk, sk: `ITEM#${userId}` } }))).Item;
       if (!profile?.email || !EMAIL_RE.test(profile.email)) return fail(422, 'Tu perfil no tiene un correo válido.');
       const previous = await getPreference(tenantId, userId); const current = now();
-      if (previous.emailConsent === true && !previous.consentRevokedAt && ['active', 'pending-confirmation'].includes(previous.emailStatus) && previous.emailAddress === profile.email) {
+      const isResend = previous.emailStatus === 'pending-confirmation';
+      if (previous.emailConsent === true && !previous.consentRevokedAt && previous.emailStatus === 'active' && previous.emailAddress === profile.email) {
         return ok(200, { status: previous.emailStatus, message: 'Ya tienes este canal activado.' });
       }
       try {
@@ -113,17 +157,50 @@ export function createEmailRuntime({ db, table, sns, domainTopicArn = '', emailT
           subscriptionArn = result.SubscriptionArn || null; status = 'pending-confirmation';
         } catch { return fail(502, 'No se pudo crear la suscripción de correo. Inténtalo más tarde.'); }
       }
-      const item = { ...key, ...previous, emailAddress: profile.email, emailConsent: true, emailConsentVersion: CONSENT_VERSION, emailConsentAt: current.toISOString(), consentRevokedAt: null, emailStatus: status, emailSubscriptionArn: subscriptionArn, emailAlertTypes: previous.emailAlertTypes || [], lastSubscribeRequestedAt: current.toISOString(), updatedAt: current.toISOString() };
+      const item = { ...key, ...previous, emailAddress: profile.email, emailConsent: true, emailConsentVersion: CONSENT_VERSION, emailConsentAt: previous.emailConsentAt || current.toISOString(), consentRevokedAt: null, emailStatus: status, emailSubscriptionArn: subscriptionArn, emailAlertTypes: previous.emailAlertTypes || [], lastSubscribeRequestedAt: current.toISOString(), updatedAt: current.toISOString() };
       await db.send(new PutCommand({ TableName: table, Item: item }));
-      return ok(202, { status, message: status === 'pending-confirmation' ? 'Te enviamos un correo de Amazon SNS: abre el mensaje y confirma la suscripción.' : 'Canal local activado; los correos se simulan y no salen de tu equipo.' });
+      return ok(202, {
+        status,
+        message: status === 'pending-confirmation'
+          ? (isResend
+            ? 'Reenviamos el correo de confirmación de Amazon SNS: revisa tu bandeja (y spam) y haz clic en Confirm subscription.'
+            : 'Te enviamos un correo de Amazon SNS: abre el mensaje y confirma la suscripción.')
+          : 'Canal local activado; los correos se simulan y no salen de tu equipo.',
+      });
     }
     if (path === '/notifications/email/preferences' && method === 'PUT') {
       let body; try { body = JSON.parse(event.body || '{}'); } catch { return fail(400, 'Preferencias inválidas.'); }
       if (!Array.isArray(body.alertTypes) || body.alertTypes.length > 12 || body.alertTypes.some((type) => !eventTypes.has(type))) return fail(400, 'Selecciona eventos de notificación válidos.');
       const current = await getPreference(tenantId, userId);
-      const updated = { ...key, ...current, emailAlertTypes: [...new Set(body.alertTypes)], updatedAt: now().toISOString() };
+      const baseSchedule = resolveEmailSchedule(current);
+      if (body.anytime !== undefined && typeof body.anytime !== 'boolean') return fail(400, 'Valor inválido para cualquier horario.');
+      const anytime = typeof body.anytime === 'boolean' ? body.anytime : baseSchedule.anytime;
+      let allowedHours = baseSchedule.allowedHours;
+      if (body.allowedHours !== undefined) {
+        const start = body.allowedHours?.start;
+        const end = body.allowedHours?.end;
+        if (typeof start !== 'string' || typeof end !== 'string' || !TIME_RE.test(start) || !TIME_RE.test(end)) {
+          return fail(400, 'Ingresa un horario válido en formato HH:MM.');
+        }
+        allowedHours = { start, end };
+      }
+      let timezone = baseSchedule.timezone;
+      if (body.timezone !== undefined) {
+        if (typeof body.timezone !== 'string' || !body.timezone.trim()) return fail(400, 'Zona horaria inválida.');
+        timezone = body.timezone.trim();
+        try { new Intl.DateTimeFormat('en', { timeZone: timezone }); } catch { return fail(400, 'Zona horaria inválida.'); }
+      }
+      const updated = {
+        ...key,
+        ...current,
+        emailAlertTypes: [...new Set(body.alertTypes)],
+        emailAnytime: anytime,
+        emailAllowedHours: allowedHours,
+        emailTimezone: timezone,
+        updatedAt: now().toISOString(),
+      };
       await db.send(new PutCommand({ TableName: table, Item: updated }));
-      return ok(200, { alertTypes: updated.emailAlertTypes });
+      return ok(200, { alertTypes: updated.emailAlertTypes, anytime: updated.emailAnytime, allowedHours: updated.emailAllowedHours, timezone: updated.emailTimezone });
     }
     if (path === '/notifications/email' && method === 'DELETE') {
       const current = await getPreference(tenantId, userId);
@@ -141,15 +218,16 @@ export function createEmailRuntime({ db, table, sns, domainTopicArn = '', emailT
 
   // Producer side: publish a notification request to the SNS Domain Topic.
   async function enqueue({ tenantId, userId, eventType, idempotencyKey, parameters = [], title = '' }) {
-    if (mode === 'disabled' || !domainTopicArn || !eventTypes.has(eventType) || !tenantId || !userId || !idempotencyKey) return false;
+    const resolvedEventType = FLOW_EVENT_MAP[eventType] || eventType;
+    if (mode === 'disabled' || !domainTopicArn || !eventTypes.has(resolvedEventType) || !tenantId || !userId || !idempotencyKey) return false;
     const prefs = await getPreference(tenantId, userId);
-    if (!allowed(prefs, eventType)) return false;
-    const job = { tenantId, userId, eventType, idempotencyKey, parameters, title: String(title).slice(0, 180), queuedAt: now().toISOString() };
+    if (!allowed(prefs, resolvedEventType)) return false;
+    const job = { tenantId, userId, eventType: resolvedEventType, idempotencyKey, parameters, title: String(title).slice(0, 180), queuedAt: now().toISOString() };
     await sns.send(new PublishCommand({
       TopicArn: domainTopicArn, Message: JSON.stringify(job),
-      MessageAttributes: { eventType: { DataType: 'String', StringValue: eventType }, tenantId: { DataType: 'String', StringValue: tenantId }, userId: { DataType: 'String', StringValue: userId } },
+      MessageAttributes: { eventType: { DataType: 'String', StringValue: resolvedEventType }, tenantId: { DataType: 'String', StringValue: tenantId }, userId: { DataType: 'String', StringValue: userId } },
     }));
-    await db.send(new PutCommand({ TableName: table, Item: { ...deliveryKey(tenantId, userId, idempotencyKey), id: idempotencyKey, eventId: idempotencyKey, tenantId, userId, eventType, deliveryStatus: 'REQUESTED', provider: 'email-sns', title: job.title, createdAt: now().toISOString() }, ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)' })).catch((error) => { if (error.name !== 'ConditionalCheckFailedException') throw error; });
+    await db.send(new PutCommand({ TableName: table, Item: { ...deliveryKey(tenantId, userId, idempotencyKey), id: idempotencyKey, eventId: idempotencyKey, tenantId, userId, eventType: resolvedEventType, deliveryStatus: 'REQUESTED', provider: 'email-sns', title: job.title, createdAt: now().toISOString() }, ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)' })).catch((error) => { if (error.name !== 'ConditionalCheckFailedException') throw error; });
     return true;
   }
 

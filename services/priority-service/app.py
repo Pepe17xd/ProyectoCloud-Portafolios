@@ -294,6 +294,7 @@ def assess(b: Assessment, authorization: str | None = Header(None), a=Depends(ac
                     "payload": {"score": value},
                 }
             ),
+            MessageAttributes={"eventType": {"DataType": "String", "StringValue": "PriorityRecalculated"}},
         )
     return doc
 

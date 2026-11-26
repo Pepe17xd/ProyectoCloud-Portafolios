@@ -329,6 +329,7 @@ def assign(body: AssignmentIn, authorization: str | None = Header(None), a=__imp
                     "payload": {"projectId": body.projectId, "resourceId": body.resourceId},
                 }
             ),
+            MessageAttributes={"eventType": {"DataType": "String", "StringValue": "ResourceAssigned"}},
         )
     return doc
 

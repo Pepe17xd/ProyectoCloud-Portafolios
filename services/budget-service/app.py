@@ -346,6 +346,7 @@ def expense(b: ExpenseIn, authorization: str | None = Header(None), a=Depends(ac
                     "payload": {"spent": spent, "allocated": allocated},
                 }
             ),
+            MessageAttributes={"eventType": {"DataType": "String", "StringValue": "BudgetThresholdExceeded"}},
         )
     return item
 

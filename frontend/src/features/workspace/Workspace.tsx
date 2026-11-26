@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ArrowRight, ArrowUpDown, BarChart3, BriefcaseBusiness, CalendarDays, FileBarChart, Flag, FolderKanban, Layers, Pencil, PieChart, Plus, ReceiptText, RefreshCw, Search, Sparkles, Target, Trash2, UserPlus, Users, Wallet, Workflow, X } from 'lucide-react';
 import { localAuth, request } from '../../api/client';
 import { getCurrentCognitoUser, getCognitoOrganizationInfo, signOutFromCognito } from '../../auth/cognito';
@@ -67,6 +67,31 @@ const fieldLabels: Record<string, string> = {
   score: 'Puntaje',
 };
 const fieldLabel = (field: string) => fieldLabels[field] || field;
+const PRIORITY_FIELDS = ['impact', 'urgency', 'risk', 'alignment'] as const;
+function clampPriorityValue(value: unknown, fallback = 50): number {
+  if (value === undefined || value === null || String(value).trim() === '') return fallback;
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.min(100, Math.max(0, num));
+}
+function computePriorityScore(values: Record<string, unknown>): number {
+  const impact = clampPriorityValue(values.impact);
+  const urgency = clampPriorityValue(values.urgency);
+  const risk = clampPriorityValue(values.risk);
+  const alignment = clampPriorityValue(values.alignment);
+  return Math.round((0.35 * impact + 0.25 * urgency + 0.25 * alignment + 0.15 * (100 - risk)) * 100) / 100;
+}
+function priorityScoreTone(score: number): 'emerald' | 'sky' | 'amber' {
+  return score >= 70 ? 'emerald' : score >= 40 ? 'sky' : 'amber';
+}
+function hasInvalidPriorityRange(values: Record<string, unknown>, requireAll = false): boolean {
+  return PRIORITY_FIELDS.some(field => {
+    const raw = values[field];
+    if (raw === undefined || raw === null || String(raw).trim() === '') return requireAll;
+    const num = Number(raw);
+    return !Number.isFinite(num) || num < 0 || num > 100;
+  });
+}
 function itemId(item: Item) { return typeof item.sk === 'string' ? item.sk.replace(/^ITEM#/, '') : String(item.id || ''); }
 function readable(value: unknown) { return value === undefined || value === null || value === '' ? '—' : String(value); }
 function valueEmpty(value: unknown) { return value === undefined || value === null || value === ''; }
@@ -246,22 +271,97 @@ function DataTable({ title, rows, fields, entityNames = {} }: { title: string; r
   );
 }
 
-function NotificationCenter() {
-  const [prefs, setPrefs] = useState<any>({ enabled: false, timezone: 'America/Lima', allowedHours: { start: '08:00', end: '18:00' }, frequency: 'immediate', alertTypes: [], emailConsent: false });
-  const [emailChannel, setEmailChannel] = useState<any>({ status: 'unavailable', providerAvailable: false, alertTypes: [], items: [] });
-  const [inbox, setInbox] = useState<any[]>([]); const [consent, setConsent] = useState(false); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
+function NotificationCenter({ refreshToken = 0 }: { refreshToken?: number }) {
+  const defaultPrefs = { enabled: false, anytime: false, timezone: 'America/Lima', allowedHours: { start: '08:00', end: '18:00' }, frequency: 'immediate', alertTypes: [] as string[], emailConsent: false };
+  const defaultEmailChannel = { status: 'unavailable', providerAvailable: false, alertTypes: [] as string[], anytime: true, allowedHours: { start: '08:00', end: '18:00' }, timezone: 'America/Lima', items: [] as any[] };
+  const [prefs, setPrefs] = useState<any>(defaultPrefs);
+  const [emailChannel, setEmailChannel] = useState<any>(defaultEmailChannel);
+  const [inbox, setInbox] = useState<any[]>([]); const [consent, setConsent] = useState(false); const [inboxMessage, setInboxMessage] = useState(''); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false); const [lastLoadedAt, setLastLoadedAt] = useState('');
   const types = ['ProjectCreated','ProjectUpdated','ProjectCompleted','BudgetThresholdExceeded','ResourceAssigned','PriorityRecalculated'];
   const emailTypes = ['ReminderDue','AutomationReport','RiskAlert','WeeklySummary'];
   const emailLabels:Record<string,string> = { ReminderDue:'Recordatorios', AutomationReport:'Resúmenes de automatización', RiskAlert:'Alertas de riesgo', WeeklySummary:'Resumen semanal' };
-  const load = useCallback(async () => { const [p, i, e] = await Promise.all([request('identity','notifications/preferences'),request<any>('identity','notifications/inbox'),request<any>('identity','notifications/email')]); setPrefs(p); setInbox(i.items || []); setEmailChannel(e); setConsent(Boolean(e.consent)); }, []);
-  useEffect(() => { void load().catch(e => setMessage(e instanceof Error ? e.message : String(e))); }, [load]);
-  async function save(e:React.FormEvent) { e.preventDefault(); setBusy(true); setMessage(''); try { await request('identity','notifications/preferences','PUT',prefs); await load(); setMessage('Preferencias guardadas para tu usuario autenticado.'); } catch(e) { setMessage(e instanceof Error?e.message:String(e)); } finally { setBusy(false); } }
-  async function subscribeEmail() { setBusy(true); setMessage(''); try { const result=await request<any>('identity','notifications/email/subscribe','POST',{consent,consentVersion:'profiles-email-2026-01'}); setMessage(result.message); await load(); } catch(e) { setMessage(e instanceof Error?e.message:String(e)); } finally { setBusy(false); } }
-  async function revokeEmail() { setBusy(true); try { await request('identity','notifications/email','DELETE'); await load(); setMessage('Consentimiento revocado y suscripción de correo cancelada.'); } catch(e) { setMessage(e instanceof Error?e.message:String(e)); } finally { setBusy(false); } }
-  async function saveEmailPreferences(e:React.FormEvent) { e.preventDefault(); setBusy(true); try { await request('identity','notifications/email/preferences','PUT',{alertTypes:emailChannel.alertTypes||[]}); await load(); setMessage('Preferencias de correo guardadas.'); } catch(e) { setMessage(e instanceof Error?e.message:String(e)); } finally { setBusy(false); } }
+  const load = useCallback(async () => {
+    const [p, i, e] = await Promise.all([request<any>('identity','notifications/preferences'),request<any>('identity','notifications/inbox'),request<any>('identity','notifications/email')]);
+    setPrefs({
+      ...defaultPrefs,
+      ...(p || {}),
+      enabled: Boolean(p?.enabled),
+      anytime: Boolean(p?.anytime),
+      timezone: p?.timezone || defaultPrefs.timezone,
+      allowedHours: p?.allowedHours?.start && p?.allowedHours?.end ? p.allowedHours : defaultPrefs.allowedHours,
+      frequency: p?.frequency || defaultPrefs.frequency,
+      alertTypes: Array.isArray(p?.alertTypes) ? p.alertTypes : [],
+    });
+    setInbox(i?.items || []);
+    setEmailChannel({
+      ...defaultEmailChannel,
+      ...(e || {}),
+      anytime: e?.anytime !== false,
+      allowedHours: e?.allowedHours?.start && e?.allowedHours?.end ? e.allowedHours : defaultEmailChannel.allowedHours,
+      timezone: e?.timezone || p?.timezone || defaultEmailChannel.timezone,
+      alertTypes: Array.isArray(e?.alertTypes) ? e.alertTypes : [],
+      items: Array.isArray(e?.items) ? e.items : [],
+    });
+    setConsent(Boolean(e?.consent));
+    setLastLoadedAt(new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    return { p, i, e };
+  }, []);
+  useEffect(() => {
+    setBusy(true);
+    void load()
+      .catch(e => setInboxMessage(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(false));
+  }, [load, refreshToken]);
+  async function save(e:React.FormEvent) {
+    e.preventDefault(); setBusy(true); setInboxMessage('');
+    try {
+      const payload = {
+        enabled: Boolean(prefs.enabled),
+        anytime: Boolean(prefs.anytime),
+        timezone: String(prefs.timezone || 'America/Lima').trim() || 'America/Lima',
+        allowedHours: { start: prefs.allowedHours?.start || '08:00', end: prefs.allowedHours?.end || '18:00' },
+        frequency: prefs.frequency || 'immediate',
+        alertTypes: Array.isArray(prefs.alertTypes) ? prefs.alertTypes : [],
+      };
+      await request('identity','notifications/preferences','PUT',payload);
+      await load();
+      setInboxMessage('Preferencias guardadas para tu usuario autenticado.');
+    } catch(e) { setInboxMessage(e instanceof Error?e.message:String(e)); } finally { setBusy(false); }
+  }
+  async function subscribeEmail(forceConsent = false) {
+    setBusy(true); setMessage('');
+    try {
+      const result=await request<any>('identity','notifications/email/subscribe','POST',{consent: forceConsent || consent, consentVersion:'profiles-email-2026-01'});
+      setMessage(result.message);
+      await load();
+    } catch(e) { setMessage(e instanceof Error?e.message:String(e)); } finally { setBusy(false); }
+  }
+  async function verifyEmailStatus() {
+    setBusy(true); setMessage('');
+    try {
+      const { e } = await load();
+      setMessage(e?.status === 'active'
+        ? 'Suscripción confirmada y activa.'
+        : 'Aún aparece pendiente en Amazon SNS. Revisa tu bandeja o spam y abre el enlace "Confirm subscription", o reenvía el correo.');
+    } catch(e) { setMessage(e instanceof Error?e.message:String(e)); } finally { setBusy(false); }
+  }
+  async function revokeEmail() { setBusy(true); setMessage(''); try { await request('identity','notifications/email','DELETE'); await load(); setMessage('Consentimiento revocado y suscripción de correo cancelada.'); } catch(e) { setMessage(e instanceof Error?e.message:String(e)); } finally { setBusy(false); } }
+  async function saveEmailPreferences(e:React.FormEvent) {
+    e.preventDefault(); setBusy(true); setMessage('');
+    try {
+      await request('identity','notifications/email/preferences','PUT',{
+        alertTypes: emailChannel.alertTypes || [],
+        anytime: emailChannel.anytime !== false,
+        allowedHours: { start: emailChannel.allowedHours?.start || '08:00', end: emailChannel.allowedHours?.end || '18:00' },
+        timezone: String(emailChannel.timezone || 'America/Lima').trim() || 'America/Lima',
+      });
+      await load();
+      setMessage('Preferencias de correo guardadas.');
+    } catch(e) { setMessage(e instanceof Error?e.message:String(e)); } finally { setBusy(false); }
+  }
   const statusLabels:Record<string,string> = { unavailable:'Canal de correo no disponible', 'not-configured':'Sin configurar','pending-confirmation':'Confirmación pendiente en tu bandeja',active:'Activo',revoked:'Desactivado' };
   const deliveryLabels:Record<string,string> = { REQUESTED:'Solicitado',SENT_TO_SNS:'Enviado',SIMULATED_LOCAL:'Registrado',FAILED:'No entregado',BLOCKED:'Pausado',UNAVAILABLE:'No disponible' };
-  return <section className="panel notification-panel"><div className="panelHeading"><div><h2>Notificaciones</h2><span>El buzón interno sigue disponible de forma independiente al correo electrónico.</span></div><span className="mode-chip">{emailChannel.providerAvailable?(statusLabels[emailChannel.status]||emailChannel.status):'Correo no disponible'}</span></div><form className="notification-form" onSubmit={save}><label className="check-label"><input type="checkbox" checked={Boolean(prefs.enabled)} onChange={e=>setPrefs({...prefs,enabled:e.target.checked})}/> Activar alertas en el buzón interno</label><div className="notification-options"><label>Zona horaria<input value={prefs.timezone||'America/Lima'} onChange={e=>setPrefs({...prefs,timezone:e.target.value})}/></label><label>Horario desde<input type="time" value={prefs.allowedHours?.start||'08:00'} onChange={e=>setPrefs({...prefs,allowedHours:{...prefs.allowedHours,start:e.target.value}})}/></label><label>Hasta<input type="time" value={prefs.allowedHours?.end||'18:00'} onChange={e=>setPrefs({...prefs,allowedHours:{...prefs.allowedHours,end:e.target.value}})}/></label></div><fieldset><legend>Eventos para el buzón interno</legend><div className="notification-types">{types.map(type=><label className="check-label" key={type}><input type="checkbox" checked={(prefs.alertTypes||[]).includes(type)} onChange={e=>setPrefs({...prefs,alertTypes:e.target.checked?[...new Set([...(prefs.alertTypes||[]),type])]:prefs.alertTypes.filter((x:string)=>x!==type)})}/>{formatAlertEventLabel(type)}</label>)}</div></fieldset><button className="secondary" disabled={busy}>Guardar preferencias</button></form><div className="notification-email"><div className="email-intro"><span className="email-label">NOTIFICACIONES POR CORREO</span><h3>Recibe recordatorios y alertas por correo electrónico</h3><p>Elige qué avisos quieres recibir en el correo de tu perfil y mantén el control de tu suscripción.</p></div><div className="email-status-grid" aria-label="Estado del canal de correo"><div><span>Disponibilidad</span><strong>{emailChannel.providerAvailable ? 'Disponible' : 'No disponible'}</strong></div><div><span>Consentimiento</span><strong>{emailChannel.consent ? 'Aceptado' : 'No otorgado'}</strong></div><div><span>Suscripción</span><strong>{emailChannel.status === 'active' ? 'Confirmada' : emailChannel.status === 'pending-confirmation' ? 'Pendiente de confirmar' : 'Sin activar'}</strong></div><div><span>Correo destino</span><strong>{emailChannel.email || 'Correo de tu cuenta'}</strong></div></div><p>{emailChannel.providerAvailable?'Al activarlo, te enviaremos un correo de confirmación a tu dirección registrada.':'Este canal requiere activar las notificaciones por correo. El buzón interno funciona de forma independiente.'}</p>{!emailChannel.providerAvailable?<p role="status">El canal de correo todavía no está disponible. Puedes seguir usando las notificaciones internas.</p>:<><form className="notification-form" onSubmit={saveEmailPreferences}><div className="notification-options"><label className="check-label"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)} disabled={['active','pending-confirmation'].includes(emailChannel.status)}/> Acepto recibir recordatorios y alertas por correo electrónico. Puedo cancelar la suscripción cuando quiera.</label></div>{!['active','pending-confirmation'].includes(emailChannel.status)&&<button className="secondary" type="button" disabled={busy||!consent} onClick={()=>void subscribeEmail()}>Activar notificaciones por correo</button>}{emailChannel.status==='pending-confirmation'&&<p role="status">Revisa tu bandeja de entrada y confirma la suscripción desde el enlace del correo recibido.</p>}{['active','pending-confirmation'].includes(emailChannel.status)&&<><fieldset><legend>Qué correos quieres recibir</legend><div className="notification-types">{emailTypes.map(type=><label className="check-label" key={type}><input type="checkbox" checked={(emailChannel.alertTypes||[]).includes(type)} onChange={e=>setEmailChannel({...emailChannel,alertTypes:e.target.checked?[...new Set([...(emailChannel.alertTypes||[]),type])]:emailChannel.alertTypes.filter((x:string)=>x!==type)})}/>{emailLabels[type]}</label>)}</div></fieldset><button className="secondary" disabled={busy}>Guardar tipos de correo</button></>}</form>{['active','pending-confirmation'].includes(emailChannel.status)&&<button className="textButton" disabled={busy} onClick={()=>void revokeEmail()}>Cancelar suscripción de correo</button>}</>}{message&&<p className="assistant-state" role="status">{message}</p>}<div className="notification-inbox"><h3>Últimos envíos por correo</h3>{emailChannel.items?.length?emailChannel.items.map((item:any)=><article key={item.eventId||item.id}><b>{item.title||formatAlertEventLabel(item.eventType)}</b><span>{deliveryLabels[item.deliveryStatus]||item.deliveryStatus}</span></article>):<p>Aún no hay mensajes enviados por este canal.</p>}</div></div><div className="notification-inbox"><h3>Buzón interno</h3>{inbox.length?inbox.slice(0,8).map((item:any)=><article key={item.eventId}><b>{item.title}</b><span>{formatDate(item.createdAt)}</span></article>):<p>No hay notificaciones para esta cuenta.</p>}</div></section>;
+  return <section className="panel notification-panel"><div className="panelHeading"><div><h2>Notificaciones</h2><span>El buzón interno sigue disponible de forma independiente al correo electrónico.</span></div><span className="mode-chip">{emailChannel.providerAvailable?(statusLabels[emailChannel.status]||emailChannel.status):'Correo no disponible'}</span></div><form className="notification-form" onSubmit={save}><label className="check-label"><input type="checkbox" checked={Boolean(prefs.enabled)} onChange={e=>setPrefs({...prefs,enabled:e.target.checked})}/> Activar alertas en el buzón interno</label><label className="check-label"><input type="checkbox" checked={Boolean(prefs.anytime)} onChange={e=>setPrefs({...prefs,anytime:e.target.checked})}/> Recibir alertas en cualquier horario (24/7)</label><div className="notification-options"><label>Zona horaria<input value={prefs.timezone||'America/Lima'} onChange={e=>setPrefs({...prefs,timezone:e.target.value})}/></label>{!prefs.anytime?<><label>Horario desde<input type="time" value={prefs.allowedHours?.start||'08:00'} onChange={e=>setPrefs({...prefs,allowedHours:{...prefs.allowedHours,start:e.target.value}})}/></label><label>Hasta<input type="time" value={prefs.allowedHours?.end||'18:00'} onChange={e=>setPrefs({...prefs,allowedHours:{...prefs.allowedHours,end:e.target.value}})}/></label></>:<small className="assistant-state">Activo las 24 horas en la zona horaria elegida.</small>}</div><fieldset><legend>Eventos para el buzón interno</legend><div className="notification-types">{types.map(type=><label className="check-label" key={type}><input type="checkbox" checked={(prefs.alertTypes||[]).includes(type)} onChange={e=>setPrefs({...prefs,alertTypes:e.target.checked?[...new Set([...(prefs.alertTypes||[]),type])]:(prefs.alertTypes||[]).filter((x:string)=>x!==type)})}/>{formatAlertEventLabel(type)}</label>)}</div></fieldset><button className="secondary" disabled={busy}>Guardar preferencias</button>{inboxMessage&&<p className="assistant-state" role="status">{inboxMessage}</p>}</form><div className="notification-email"><div className="email-intro"><span className="email-label">NOTIFICACIONES POR CORREO</span><h3>Recibe recordatorios y alertas por correo electrónico</h3><p>Elige qué avisos quieres recibir en el correo de tu perfil y mantén el control de tu suscripción.</p></div><div className="email-status-grid" aria-label="Estado del canal de correo"><div><span>Disponibilidad</span><strong>{emailChannel.providerAvailable ? 'Disponible' : 'No disponible'}</strong></div><div><span>Consentimiento</span><strong>{emailChannel.consent ? 'Aceptado' : 'No otorgado'}</strong></div><div><span>Suscripción</span><strong>{emailChannel.status === 'active' ? 'Confirmada' : emailChannel.status === 'pending-confirmation' ? 'Pendiente de confirmar' : 'Sin activar'}</strong></div><div><span>Correo destino</span><strong>{emailChannel.email || 'Correo de tu cuenta'}</strong></div></div><p>{emailChannel.providerAvailable?'Al activarlo, te enviaremos un correo de confirmación a tu dirección registrada.':'Este canal requiere activar las notificaciones por correo. El buzón interno funciona de forma independiente.'}</p>{!emailChannel.providerAvailable?<p role="status">El canal de correo todavía no está disponible. Puedes seguir usando las notificaciones internas.</p>:<><form className="notification-form" onSubmit={saveEmailPreferences}><div className="notification-options"><label className="check-label"><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)} disabled={['active','pending-confirmation'].includes(emailChannel.status)}/> Acepto recibir recordatorios y alertas por correo electrónico. Puedo cancelar la suscripción cuando quiera.</label></div>{!['active','pending-confirmation'].includes(emailChannel.status)&&<button className="secondary" type="button" disabled={busy||!consent} onClick={()=>void subscribeEmail()}>Activar notificaciones por correo</button>}{emailChannel.status==='pending-confirmation'&&<><p role="status">Revisa tu bandeja de entrada y confirma la suscripción desde el enlace del correo recibido.</p><div className="notification-actions"><button className="secondary" type="button" disabled={busy} onClick={()=>void subscribeEmail(true)}>Reenviar correo de confirmación</button><button className="secondary" type="button" disabled={busy} onClick={()=>void verifyEmailStatus()}>Ya confirmé, verificar estado</button></div></>}{['active','pending-confirmation'].includes(emailChannel.status)&&<><label className="check-label"><input type="checkbox" checked={emailChannel.anytime !== false} onChange={e=>setEmailChannel({...emailChannel,anytime:e.target.checked})}/> Recibir correos en cualquier horario (24/7)</label>{emailChannel.anytime === false && <div className="notification-options"><label>Zona horaria de correo<input value={emailChannel.timezone||'America/Lima'} onChange={e=>setEmailChannel({...emailChannel,timezone:e.target.value})}/></label><label>Recibir correos desde<input type="time" value={emailChannel.allowedHours?.start||'08:00'} onChange={e=>setEmailChannel({...emailChannel,allowedHours:{...emailChannel.allowedHours,start:e.target.value}})}/></label><label>Hasta<input type="time" value={emailChannel.allowedHours?.end||'18:00'} onChange={e=>setEmailChannel({...emailChannel,allowedHours:{...emailChannel.allowedHours,end:e.target.value}})}/></label></div>}<fieldset><legend>Qué correos quieres recibir</legend><div className="notification-types">{emailTypes.map(type=><label className="check-label" key={type}><input type="checkbox" checked={(emailChannel.alertTypes||[]).includes(type)} onChange={e=>setEmailChannel({...emailChannel,alertTypes:e.target.checked?[...new Set([...(emailChannel.alertTypes||[]),type])]:(emailChannel.alertTypes||[]).filter((x:string)=>x!==type)})}/>{emailLabels[type]}</label>)}</div></fieldset><button className="secondary" disabled={busy}>Guardar preferencias de correo</button></>}</form>{['active','pending-confirmation'].includes(emailChannel.status)&&<button className="textButton" disabled={busy} onClick={()=>void revokeEmail()}>Cancelar suscripción de correo</button>}</>}{message&&<p className="assistant-state" role="status">{message}</p>}<div className="notification-inbox"><h3>Últimos envíos por correo</h3>{emailChannel.items?.length?emailChannel.items.map((item:any)=><article key={item.eventId||item.id}><b>{item.title||formatAlertEventLabel(item.eventType)}</b><span>{deliveryLabels[item.deliveryStatus]||item.deliveryStatus}</span></article>):<p>Aún no hay mensajes enviados por este canal.</p>}</div></div><div className="notification-inbox"><h3>Buzón interno{lastLoadedAt && <small> · Actualizado {lastLoadedAt}</small>}</h3><button className="textButton" type="button" disabled={busy} onClick={() => { setBusy(true); void load().catch(e => setInboxMessage(e instanceof Error ? e.message : String(e))).finally(() => setBusy(false)); }}>{busy ? 'Actualizando buzón…' : 'Actualizar buzón'}</button>{inbox.length?inbox.slice(0,8).map((item:any)=><article key={item.eventId}><b>{item.title}</b><span>{formatDate(item.createdAt)}</span></article>):<p>No hay notificaciones para esta cuenta.</p>}</div></section>;
 }
 
 const FLOW_TYPE_OPTIONS = [
@@ -283,21 +383,79 @@ const FLOW_DAY_OPTIONS = [
   { value: '6', label: 'Sábado' },
 ];
 
-function FlowPanel() {
+const FLOW_ALERT_META: Record<string, { label: string; tone: string; fallbackEntity: string }> = {
+  PROJECT_OVERDUE: { label: 'Proyecto atrasado', tone: 'badge-rose', fallbackEntity: 'Proyecto' },
+  TASK_OVERDUE: { label: 'Tarea vencida', tone: 'badge-amber', fallbackEntity: 'Tarea' },
+  BUDGET_THRESHOLD: { label: 'Presupuesto en alerta', tone: 'badge-amber', fallbackEntity: 'Presupuesto' },
+  RESOURCE_OVER_CAPACITY: { label: 'Recurso sobrecargado', tone: 'badge-rose', fallbackEntity: 'Recurso' },
+};
+
+function FlowPanel({ refreshToken = 0, entityNames = {} }: { refreshToken?: number; entityNames?: Record<string, string> }) {
   const [flows,setFlows]=useState<any[]>([]);const [runs,setRuns]=useState<any[]>([]);const [message,setMessage]=useState('');const [busy,setBusy]=useState(false);const [type,setType]=useState('weekly-summary');const [frequency,setFrequency]=useState('weekly');const [time,setTime]=useState('09:00');const [dayOfWeek,setDayOfWeek]=useState(1);
-  const load=useCallback(async()=>{const data=await request<any>('identity','flows');setFlows(data.items||[]);},[]);useEffect(()=>{void load().catch(e=>setMessage(String(e)));},[load]);
+  const load=useCallback(async()=>{const data=await request<any>('identity','flows');setFlows(data.items||[]);},[]);useEffect(()=>{void load().catch(e=>setMessage(String(e)));},[load, refreshToken]);
   async function create(e:React.FormEvent){e.preventDefault();setBusy(true);try{await request('identity','flows','POST',{type,frequency,time,dayOfWeek,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||'America/Lima'});await load();setMessage('Automatización guardada.');}catch(e){setMessage(String(e));}finally{setBusy(false);}}
   async function run(flow:any){setBusy(true);try{await request<any>('identity',`flows/${flow.id}/run`,'POST',{});const history=await request<any>('identity',`flows/${flow.id}/runs`);setRuns(history.items||[]);setMessage('Ejecución completada.');await load();}catch(e){setMessage(String(e));}finally{setBusy(false);}}
   async function toggle(flow:any){setBusy(true);try{await request('identity',`flows/${flow.id}`,'PATCH',{enabled:!flow.enabled});await load();}catch(e){setMessage(String(e));}finally{setBusy(false);}}
-  return <section className="panel flow-panel"><div className="panelHeading"><div><h2>Automatizaciones</h2><span>Programa resúmenes y recordatorios automáticos para tu organización.</span></div><span className="mode-chip">SEGUIMIENTO PROGRAMADO</span></div><form className="assistant-form" onSubmit={create}><CustomSelect id="flow-type" value={type} onChange={setType} options={FLOW_TYPE_OPTIONS} ariaLabel="Tipo de automatización" /><CustomSelect id="flow-frequency" value={frequency} onChange={setFrequency} options={FLOW_FREQUENCY_OPTIONS} ariaLabel="Cuando repetir" /><label className="sr-only" htmlFor="flow-time">Hora local</label><input id="flow-time" type="time" value={time} onChange={e=>setTime(e.target.value)} disabled={frequency==="manual"}/>{frequency==="weekly"&&<CustomSelect id="flow-day" value={String(dayOfWeek)} onChange={val=>setDayOfWeek(Number(val))} options={FLOW_DAY_OPTIONS} ariaLabel="Día semanal" />}<button className="primary" disabled={busy}>{busy?'Guardando…':'Crear automatización'}</button></form>{message&&<p role="status" className="assistant-state">{message}</p>}<div className="orbital-reminder-list">{flows.length?flows.map(flow=><article key={flow.id}><div><b>{flow.name}</b><span>{formatFlowType(flow.type)} · {formatFlowFrequency(flow.frequency)} · {flow.enabled?'Activa':'Pausada'} · próxima {flow.nextRunAt?formatDate(flow.nextRunAt):'manual'} · última {flow.lastRunAt?formatDate(flow.lastRunAt):'—'}</span></div><button className="textButton" disabled={busy} onClick={()=>void run(flow)}>Ejecutar ahora</button><button className="textButton" disabled={busy} onClick={()=>void toggle(flow)}>{flow.enabled?'Pausar':'Activar'}</button><button className="textButton" disabled={busy} onClick={async()=>{const d=await request<any>('identity',`flows/${flow.id}/runs`);setRuns(d.items||[]);}}>Historial</button></article>):<p>No hay automatizaciones configuradas.</p>}</div>{runs.map(run=><details key={run.executionId}><summary><StatusBadge value={run.status} /> <span>{formatDate(run.createdAt)}</span></summary><pre>{JSON.stringify(run.report||run.errors||{},null,2)}</pre></details>)}</section>;
+  return <section className="panel flow-panel"><div className="panelHeading"><div><h2>Automatizaciones</h2><span>Programa resúmenes y recordatorios automáticos para tu organización.</span></div><span className="mode-chip">SEGUIMIENTO PROGRAMADO</span></div><form className="assistant-form" onSubmit={create}><CustomSelect id="flow-type" value={type} onChange={setType} options={FLOW_TYPE_OPTIONS} ariaLabel="Tipo de automatización" /><CustomSelect id="flow-frequency" value={frequency} onChange={setFrequency} options={FLOW_FREQUENCY_OPTIONS} ariaLabel="Cuando repetir" /><label className="sr-only" htmlFor="flow-time">Hora local</label><input id="flow-time" type="time" value={time} onChange={e=>setTime(e.target.value)} disabled={frequency==="manual"}/>{frequency==="weekly"&&<CustomSelect id="flow-day" value={String(dayOfWeek)} onChange={val=>setDayOfWeek(Number(val))} options={FLOW_DAY_OPTIONS} ariaLabel="Día semanal" />}<button className="primary" disabled={busy}>{busy?'Guardando…':'Crear automatización'}</button></form>{message&&<p role="status" className="assistant-state">{message}</p>}<div className="orbital-reminder-list">{flows.length?flows.map(flow=><article key={flow.id}><div><b>{formatFlowType(flow.name || flow.type)}</b><span>{formatFlowType(flow.type)} · {formatFlowFrequency(flow.frequency)} · {flow.enabled?'Activa':'Pausada'} · próxima {flow.nextRunAt?formatDate(flow.nextRunAt):'manual'} · última {flow.lastRunAt?formatDate(flow.lastRunAt):'—'}</span></div><button className="textButton" disabled={busy} onClick={()=>void run(flow)}>Ejecutar ahora</button><button className="textButton" disabled={busy} onClick={()=>void toggle(flow)}>{flow.enabled?'Pausar':'Activar'}</button><button className="textButton" disabled={busy} onClick={async()=>{const d=await request<any>('identity',`flows/${flow.id}/runs`);setRuns(d.items||[]);}}>Historial</button></article>):<p>No hay automatizaciones configuradas.</p>}</div>{runs.map((run, idx)=>{
+    const report = run.report;
+    const alerts = Array.isArray(report?.alerts) ? report.alerts : [];
+    const pendingScenarios = Array.isArray(report?.pendingDecisionScenarios) ? report.pendingDecisionScenarios : [];
+    const counts = report?.counts;
+    const errors = Array.isArray(run.errors) ? run.errors : [];
+    return <details key={run.executionId} className="flow-run-details" open={idx === 0}><summary><StatusBadge value={run.status} /> <span>{formatDate(run.createdAt)}{alerts.length ? ` · ${alerts.length} ${alerts.length === 1 ? 'alerta' : 'alertas'}` : report ? ' · Sin alertas' : ''}</span></summary><div className="flow-run-card">
+      {counts && <div className="flow-counts-grid">
+        <div><span>Proyectos</span><strong>{counts.projects ?? 0}</strong></div>
+        <div><span>Portafolios</span><strong>{counts.portfolios ?? 0}</strong></div>
+        <div><span>Tareas</span><strong>{counts.tasks ?? 0}</strong></div>
+        <div><span>Presupuestos</span><strong>{counts.budgets ?? 0}</strong></div>
+        <div><span>Recursos</span><strong>{counts.resources ?? 0}</strong></div>
+        <div><span>Escenarios</span><strong>{counts.pendingDecisionScenarios ?? 0}</strong></div>
+      </div>}
+      <div className="flow-alerts-section">
+        <h4>Alertas detectadas</h4>
+        {alerts.length ? <div className="flow-alerts-list">{alerts.map((alert: any, aIdx: number) => {
+          const meta = FLOW_ALERT_META[alert.kind] || { label: String(alert.kind || 'Alerta'), tone: 'badge-slate', fallbackEntity: 'Elemento' };
+          const resolvedName = String(alert.entityName || entityNames[String(alert.entityId || '')] || '').trim();
+          const title = resolvedName || meta.fallbackEntity;
+          const ev = alert.evidence || {};
+          return <article className="flow-alert-item" key={`${alert.kind}-${alert.entityId || aIdx}`}>
+            <div className="flow-alert-head">
+              <strong>{title}</strong>
+              <span className={`status-badge ${meta.tone}`}><span className="status-dot" aria-hidden="true" />{meta.label}</span>
+            </div>
+            <p>{alert.cause || 'Elemento marcado para seguimiento.'}</p>
+            <div className="flow-alert-meta">
+              {ev.endDate && <span>Cierre: {formatDate(ev.endDate)}</span>}
+              {ev.dueDate && <span>Vencimiento: {formatDate(ev.dueDate)}</span>}
+              {ev.spent !== undefined && ev.allocated !== undefined && <span>Ejecutado: {formatCurrency(ev.spent)} de {formatCurrency(ev.allocated)}</span>}
+              {ev.allocated !== undefined && ev.capacity !== undefined && <span>Capacidad: {Math.round(Number(ev.allocated) * 100)}% / {Math.round(Number(ev.capacity) * 100)}%</span>}
+              {ev.status && <StatusBadge value={ev.status} />}
+            </div>
+          </article>;
+        })}</div> : <p className="flow-empty-msg">Sin alertas detectadas en esta ejecución.</p>}
+      </div>
+      {pendingScenarios.length > 0 && <div className="flow-alerts-section">
+        <h4>Escenarios pendientes de revisión</h4>
+        <div className="flow-alerts-list">{pendingScenarios.map((sc: any) => <article className="flow-alert-item" key={sc.id || sc.name}>
+          <div className="flow-alert-head"><strong>{sc.name || 'Escenario'}</strong><StatusBadge value="PENDING_REVIEW" /></div>
+          {sc.createdAt && <div className="flow-alert-meta"><span>Creado: {formatDate(sc.createdAt)}</span></div>}
+        </article>)}</div>
+      </div>}
+      {errors.length > 0 && <div className="flow-alerts-section">
+        <h4>Incidencias registradas</h4>
+        <div className="flow-alerts-list">{errors.map((err: any, eIdx: number) => <article className="flow-alert-item" key={eIdx}><p>{err.message || 'No se pudo completar esta ejecución.'}</p></article>)}</div>
+      </div>}
+      {report?.explanation && <small className="flow-run-note">{report.explanation}</small>}
+    </div></details>;
+  })}</section>;
 }
 
-function ReportsPanel() {
+function ReportsPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [type, setType] = useState('project-progress'); const [reports, setReports] = useState<any[]>([]); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
   const types: Record<string,string> = {'portfolio-status':'Estado de portafolios','project-progress':'Avance de proyectos','overdue-tasks':'Tareas vencidas','resource-usage':'Uso de recursos','budgets':'Presupuestos','priorities':'Prioridades','risks':'Riesgos'};
   const reportOptions = Object.entries(types).map(([value, label]) => ({ value, label }));
   const load = useCallback(async()=>{const data=await request<any>('project','intelligence/reports');setReports(data.items||[]);},[]);
-  useEffect(()=>{void load().catch(e=>setMessage(e instanceof Error?e.message:String(e)));},[load]);
+  useEffect(()=>{void load().catch(e=>setMessage(e instanceof Error?e.message:String(e)));},[load, refreshToken]);
   async function download(id:string) { const data=await request<any>('project',`intelligence/reports/${encodeURIComponent(id)}`); const report=data.report; const blob=new Blob([report.csv],{type:report.mediaType}); const url=URL.createObjectURL(blob); const link=document.createElement('a');link.href=url;link.download=report.fileName;link.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000); }
   async function generate(e:React.FormEvent){e.preventDefault();setBusy(true);setMessage('');try{const data=await request<any>('project','intelligence/reports','POST',{type});setMessage(`${data.report.rows.length} filas generadas.${data.report.scope.truncated?.length ? ' Algunos resultados se limitaron al máximo permitido por área.' : ''}${data.report.unavailable?.length ? ' Algunos módulos no estuvieron disponibles temporalmente.' : ''}`);await load();await download(data.report.id);}catch(e){setMessage(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
   return <section className="panel report-panel"><div className="panelHeading"><div><h2><BarChart3 size={18}/> Reportes</h2><span>Genera y descarga reportes consolidados de tu organización.</span></div><span className="mode-chip">CSV</span></div><form className="assistant-form" onSubmit={generate}><CustomSelect id="report-type" value={type} onChange={setType} options={reportOptions} ariaLabel="Tipo de reporte" /><button className="primary" disabled={busy}>{busy?'Generando…':'Generar CSV'}</button></form>{message&&<p className="assistant-state" role="status">{message}</p>}<div className="orbital-reminder-list"><h3>Historial de reportes</h3>{reports.map(report=><article key={report.id}><div><b>{types[report.type]||report.type}</b><span>{formatDate(report.generatedAt)} · {report.scope?.partial?'alcance parcial':'reporte completo'}</span></div><button className="textButton" disabled={busy} onClick={()=>void download(report.id)}>Descargar CSV</button></article>)}{!reports.length&&<p>No se han generado reportes en esta organización.</p>}</div><small>Cada reporte incluye hasta 1 000 registros por área. Los importes se muestran en su moneda original.</small></section>;
@@ -318,7 +476,7 @@ function resolveDocumentContentType(file: File): string {
   return ALLOWED_DOCUMENT_TYPES[ext] || '';
 }
 
-function DocumentsPanel() {
+function DocumentsPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [projects, setProjects] = useState<Item[]>([]);
   const [documents, setDocuments] = useState<Item[]>([]);
   const [docPage, setDocPage] = useState(1);
@@ -341,7 +499,7 @@ function DocumentsPanel() {
 
   useEffect(() => {
     void load().catch(e => setError(e instanceof Error ? e.message : String(e)));
-  }, [load]);
+  }, [load, refreshToken]);
 
   async function upload(e: React.FormEvent) {
     e.preventDefault();
@@ -447,6 +605,21 @@ function DocumentsPanel() {
 
 export function Workspace() {
   const [user, setUser] = useState(''); const [refreshToken, setRefreshToken] = useState(0);
+  const [refreshState, setRefreshState] = useState<'idle' | 'loading' | 'done'>('idle');
+  const refreshTimers = useRef<number[]>([]);
+  useEffect(() => () => { refreshTimers.current.forEach(id => window.clearTimeout(id)); }, []);
+  const handleRefresh = useCallback(() => {
+    refreshTimers.current.forEach(id => window.clearTimeout(id));
+    refreshTimers.current = [];
+    setRefreshState('loading');
+    setRefreshToken(n => n + 1);
+    const t1 = window.setTimeout(() => {
+      setRefreshState('done');
+      const t2 = window.setTimeout(() => setRefreshState('idle'), 2000);
+      refreshTimers.current.push(t2);
+    }, 550);
+    refreshTimers.current.push(t1);
+  }, []);
   const [orgInfo, setOrgInfo] = useState<{ tenantId: string; role: string }>({ tenantId: '', role: '' });
   const [userProfile, setUserProfile] = useState<{ username?: string; name?: string; email?: string; role?: string; tenantId?: string; organizationName?: string }>({});
   const [entityNames, setEntityNames] = useState<Record<string, string>>({});
@@ -609,6 +782,7 @@ export function Workspace() {
     if (active?.key === 'identity') setForm({ role: 'MANAGER', status: 'ACTIVE', password: '' });
     else if (active?.key === 'resource') setForm({ type: 'person', capacity: '1', status: 'ACTIVE' });
     else if (active?.key === 'budget') setForm({ currency: 'USD', allocated: '0', spent: '0' });
+    else if (active?.key === 'priority') setForm({ impact: '50', urgency: '50', risk: '50', alignment: '50' });
     else if (active?.key === 'portfolio' || active?.key === 'project') setForm({ status: 'ACTIVE' });
     else setForm({});
     setSyncAsResource(true);
@@ -638,7 +812,12 @@ export function Workspace() {
       }
     }
   }
-  async function save(e: React.FormEvent) { e.preventDefault(); if (!active) return; setBusy(true); setError(''); setNotice('');
+  async function save(e: React.FormEvent) { e.preventDefault(); if (!active) return; setError(''); setNotice('');
+    if (active.key === 'priority' && hasInvalidPriorityRange(form, false)) {
+      setError('Los criterios de prioridad (Impacto, Urgencia, Riesgo y Alineación) deben estar entre 0 y 100.');
+      return;
+    }
+    setBusy(true);
     try { const payload = Object.fromEntries(Object.entries(form).filter(([, v]) => v.trim()).map(([k, v]) => [k, ['allocated', 'spent', 'capacity', 'impact', 'urgency', 'risk', 'alignment'].includes(k) ? Number(v) : v]));
       if (editing) {
         delete payload.password;
@@ -714,19 +893,39 @@ export function Workspace() {
   async function moveTask(task: Item, status: string) { try { await request('project', `projects/${encodeURIComponent(taskProject)}/tasks/${encodeURIComponent(String(task.id))}`, 'PATCH', { status }); setTasks(old => old.map(x => x.id === task.id ? { ...x, status } : x)); } catch (e) { setError(String(e)); } }
   async function createAssignment(e: React.FormEvent) { e.preventDefault(); setBusy(true); setError(''); try { await request('resource', 'assignments', 'POST', { ...assignmentForm, allocation: Number(assignmentForm.allocation) }); const data = await request<{ items: Item[] }>('resource', 'assignments'); setAssignmentRows(data.items || []); setAvailabilityTick(n => n + 1); setNotice('Asignación creada.'); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
   async function createExpense(e: React.FormEvent) { e.preventDefault(); const budget = budgetRows.find(b => itemId(b) === expenseForm.budgetId); if (!budget) return; setBusy(true); setError(''); try { await request('budget', 'expenses', 'POST', { budgetId: expenseForm.budgetId, projectId: String(budget.projectId), description: expenseForm.description, amount: Number(expenseForm.amount), currency: String(budget.currency || expenseForm.currency || 'USD') }); const [expenses, budgets] = await Promise.all([request<any>('budget', 'expenses'), request<any>('budget', 'budgets')]); setExpenseRows(expenses.items || []); setBudgetRows((budgets.items || []).filter((x: Item) => x.entityType !== 'Expense')); setExpenseForm({ ...expenseForm, description: '', amount: '' }); setNotice('Gasto registrado.'); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
-  async function recalculatePriority(e: React.FormEvent) { e.preventDefault(); setBusy(true); setError(''); try { await request('priority', 'priorities/recalculate', 'POST', { ...priorityForm, impact: Number(priorityForm.impact), urgency: Number(priorityForm.urgency), risk: Number(priorityForm.risk), alignment: Number(priorityForm.alignment) }); const data = await request<{ items: Item[] }>('priority', 'rankings'); setRankingRows(data.items || []); setNotice('Prioridad recalculada y ranking actualizado.'); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
+  async function recalculatePriority(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    if (hasInvalidPriorityRange(priorityForm, true)) {
+      setError('Los criterios de prioridad (Impacto, Urgencia, Riesgo y Alineación) deben estar entre 0 y 100.');
+      return;
+    }
+    setBusy(true);
+    try {
+      await request('priority', 'priorities/recalculate', 'POST', {
+        ...priorityForm,
+        impact: Number(priorityForm.impact),
+        urgency: Number(priorityForm.urgency),
+        risk: Number(priorityForm.risk),
+        alignment: Number(priorityForm.alignment),
+      });
+      const data = await request<{ items: Item[] }>('priority', 'rankings');
+      setRankingRows(data.items || []);
+      setNotice('Prioridad recalculada y ranking actualizado.');
+    } catch (e) { setError(String(e)); } finally { setBusy(false); }
+  }
   async function askAssistant(question = assistantQuestion) { if (!question.trim()) return; setAssistantBusy(true); setAssistantAnswer(null); try { setAssistantAnswer(await request('project', 'intelligence/ask', 'POST', { question })); } catch (e) { setAssistantAnswer({ error: e instanceof Error ? e.message : String(e) }); } finally { setAssistantBusy(false); } }
 
   const specialView = tab === 'decisionlab' ? (
     <Suspense fallback={<div className="route-loading" role="status">Cargando Decision Lab…</div>}><DecisionLab request={request}/></Suspense>
   ) : tab === 'automations' ? (
-    <FlowPanel/>
+    <FlowPanel refreshToken={refreshToken} entityNames={entityNames}/>
   ) : tab === 'notifications' ? (
-    <NotificationCenter/>
+    <NotificationCenter refreshToken={refreshToken}/>
   ) : tab === 'reports' ? (
-    <ReportsPanel/>
+    <ReportsPanel refreshToken={refreshToken}/>
   ) : tab === 'documents' ? (
-    <DocumentsPanel/>
+    <DocumentsPanel refreshToken={refreshToken}/>
   ) : tab === 'assistant' ? (
     <>
       <section className="panel intelligence-panel" id="astra-intelligence"><div className="panelHeading"><div><h2><Sparkles size={18}/> ProFiles Insights</h2><span>Consultas rápidas de solo lectura sobre los proyectos y presupuestos de tu organización.</span></div><span className="mode-chip">CONSULTA RÁPIDA</span></div><form className="assistant-form" onSubmit={e=>{e.preventDefault();void askAssistant();}}><label className="sr-only" htmlFor="assistant-question">Pregunta para Inteligencia ProFiles</label><input id="assistant-question" maxLength={500} value={assistantQuestion} onChange={e=>setAssistantQuestion(e.target.value)} placeholder="¿Qué proyectos están atrasados?"/><button className="primary" disabled={assistantBusy||!assistantQuestion.trim()}>{assistantBusy?'Consultando…':<>Consultar <ArrowRight size={15}/></>}</button></form><div className="assistant-prompts">{['¿Qué proyectos están atrasados?','¿Qué presupuesto está cerca de agotarse?','Resume mis prioridades'].map(q=><button key={q} onClick={()=>{setAssistantQuestion(q);void askAssistant(q);}}>{q}</button>)}</div>{assistantBusy&&<p className="assistant-state" role="status">Consultando la información de tu organización…</p>}{assistantAnswer?.error&&<p className="error assistant-state" role="alert">{assistantAnswer.error}</p>}{assistantAnswer&&!assistantAnswer.error&&<div className="assistant-answer"><strong>Hechos consultados</strong><ul>{assistantAnswer.facts.map((fact:string,i:number)=><li key={i}>{fact}</li>)}</ul><strong>Sugerencias (no ejecutan cambios)</strong><ul>{assistantAnswer.suggestions.map((item:string,i:number)=><li key={i}>{item}</li>)}</ul>{assistantAnswer.relatedProjects?.length>0&&<><strong>Proyectos relacionados</strong><ul>{assistantAnswer.relatedProjects.map((item:any)=><li key={item.id}><a href="/app/projects">{item.name || 'Proyecto'}</a> · <StatusBadge value={item.status} /> · cierre {formatDate(item.endDate)}</li>)}</ul></>}{assistantAnswer.relatedTasks?.length>0&&<><strong>Tareas para revisar</strong><ul>{assistantAnswer.relatedTasks.map((item:any)=><li key={item.id}><a href="/app/tasks">{item.title || 'Tarea'}</a> · vence {formatDate(item.dueDate)}</li>)}</ul></>}<small>Basado en los registros actuales disponibles en tu organización.{assistantAnswer.unavailable.length?` Algunas áreas no estuvieron disponibles: ${assistantAnswer.unavailable.join(', ')}.`:''}</small></div>}</section>
@@ -913,7 +1112,7 @@ export function Workspace() {
               options={projectRows.map(x => ({ value: itemId(x), label: readable(x.name) }))}
             />
           </label>
-          <label>Asignación (%)<input type="number" min="1" max="100" value={Number(assignmentForm.allocation)*100} onChange={e=>setAssignmentForm({...assignmentForm,allocation:String(Number(e.target.value)/100)})}/></label>
+          <label>Asignación (1–100%)<input type="number" min="1" max="100" step="1" value={Math.round(Number(assignmentForm.allocation || 0) * 100)} onChange={e=>setAssignmentForm({...assignmentForm,allocation:String(Number(e.target.value)/100)})}/></label>
           <button disabled={busy}><UserPlus size={16}/>Asignar</button>
         </form>
       </section>
@@ -949,7 +1148,15 @@ export function Workspace() {
   ) : tab === 'rankings' ? (
     <>
       <section className="panel">
-        <h2>Recalcular prioridad</h2>
+        <div className="panelHeading">
+          <div>
+            <h2>Recalcular prioridad</h2>
+            <span>Escala de 0 a 100 por criterio · Mayor riesgo penaliza el puntaje final</span>
+          </div>
+          <span className={`priority-score-pill tone-${priorityScoreTone(computePriorityScore(priorityForm))}`}>
+            Puntaje estimado: {computePriorityScore(priorityForm)} / 100
+          </span>
+        </div>
         <form className="create" onSubmit={recalculatePriority}>
           <label>
             Proyecto
@@ -962,7 +1169,12 @@ export function Workspace() {
               options={projectRows.map(x => ({ value: itemId(x), label: readable(x.name) }))}
             />
           </label>
-          {(['impact','urgency','risk','alignment'] as const).map(k=><label key={k}>{fieldLabel(k)}<input type="number" min="0" max="100" value={priorityForm[k]} onChange={e=>setPriorityForm({...priorityForm,[k]:e.target.value})}/></label>)}
+          {(['impact','urgency','risk','alignment'] as const).map(k => (
+            <label key={k}>
+              {k === 'impact' ? 'Impacto (0–100)' : k === 'urgency' ? 'Urgencia (0–100)' : k === 'risk' ? 'Riesgo (0–100 ↓)' : 'Alineación (0–100)'}
+              <input type="number" min="0" max="100" step="1" value={priorityForm[k]} onChange={e=>setPriorityForm({...priorityForm,[k]:e.target.value})}/>
+            </label>
+          ))}
           <button disabled={busy}><ArrowUpDown size={16}/>Calcular</button>
         </form>
       </section>
@@ -982,7 +1194,7 @@ export function Workspace() {
   const projectHealthPct = projects.length ? Math.round(((activeProjectsCount + completedProjectsCount) / projects.length) * 100) : 0;
 
   return <div className="layout workspace-layout"><TopNav tab={tab} user={user} userProfile={userProfile} onNavigate={selectTab} onSignOut={async () => { if (localAuth) { localStorage.removeItem('cloudportfolio.accessToken'); localStorage.removeItem('cloudportfolio.user'); } else await signOutFromCognito(); setUser(''); navigate('/'); }}/>
-    <main key={tab} className="workspace-view"><PageHeader eyebrow={`ProFiles / ${(dashboard ? 'VISIÓN GENERAL' : activeTitle).toUpperCase()}`} title={dashboard ? 'Resumen ejecutivo' : activeTitle} description={dashboard ? 'Proyectos, pendientes y decisiones en un mismo lugar.' : pageDescriptions[tab] || `Consulta y administra ${activeTitle.toLowerCase()} de tu organización.`} action={<button className="secondary" disabled={busy} onClick={() => setRefreshToken(n => n + 1)}><RefreshCw size={16} className={busy ? 'spin' : ''} />Actualizar</button>}/>
+    <main key={tab} className="workspace-view"><PageHeader eyebrow={`ProFiles / ${(dashboard ? 'VISIÓN GENERAL' : activeTitle).toUpperCase()}`} title={dashboard ? 'Resumen ejecutivo' : activeTitle} description={dashboard ? 'Proyectos, pendientes y decisiones en un mismo lugar.' : pageDescriptions[tab] || `Consulta y administra ${activeTitle.toLowerCase()} de tu organización.`} action={<button className="secondary" type="button" aria-live="polite" disabled={busy || refreshState === 'loading'} onClick={handleRefresh}><RefreshCw size={16} className={busy || refreshState === 'loading' ? 'spin' : ''} />{busy || refreshState === 'loading' ? 'Actualizando…' : refreshState === 'done' ? 'Actualizado' : 'Actualizar'}</button>}/>
       {error && <div className="error banner toast" role="alert">{error}<button aria-label="Cerrar error" onClick={() => setError('')}><X size={16} /></button></div>}{notice && <div className="notice banner toast" role="status">{notice}<button aria-label="Cerrar aviso" onClick={() => setNotice('')}><X size={16} /></button></div>}
       {dashboard ? <><section className="dashboard-overview" aria-label="Estado del espacio de trabajo"><div className="dashboard-welcome"><div><span className="welcome-eyebrow">{userProfile.organizationName || 'TU ESPACIO DE TRABAJO'}</span><h2>{userProfile.name ? `Hola, ${userProfile.name.split(/\s+/)[0]}` : 'Todo lo importante, en un lugar.'}</h2><p>{userProfile.name ? 'Todo lo importante de tu organización en un mismo lugar.' : 'Revisa tus proyectos y encuentra el siguiente paso para tu equipo.'}</p></div><div className="welcome-emblem" aria-hidden="true"><FolderKanban size={38}/><span><Sparkles size={17}/></span></div></div>
         {overviewErrors.length > 0 && <div className="overview-warning" role="status">No se pudieron consultar: {overviewErrors.join(', ')}. Los datos disponibles se muestran por separado.</div>}
@@ -1047,7 +1259,7 @@ export function Workspace() {
         <Modal
           open={formOpen}
           title={editing ? (active.key === 'budget' ? 'Editar presupuesto de proyecto' : `Editar ${active.title.toLowerCase()}`) : active.key === 'identity' ? 'Agregar miembro a la organización' : active.key === 'budget' ? 'Asignar presupuesto a proyecto' : `Crear registro en ${active.title}`}
-          subtitle={active.key === 'identity' ? 'La persona compartirá los portafolios y proyectos de tu organización según su nivel de acceso.' : active.key === 'budget' ? 'Define el techo financiero asignado y el gasto ejecutado acumulado para el proyecto seleccionado.' : 'Completa la información para guardar este registro en tu organización.'}
+          subtitle={active.key === 'identity' ? 'La persona compartirá los portafolios y proyectos de tu organización según su nivel de acceso.' : active.key === 'budget' ? 'Define el techo financiero asignado y el gasto ejecutado acumulado para el proyecto seleccionado.' : active.key === 'priority' ? 'Evalúa el proyecto en una escala de 0 a 100 por criterio. Mayor riesgo penaliza el puntaje final.' : 'Completa la información para guardar este registro en tu organización.'}
           onClose={() => { setFormOpen(false); setEditing(null); }}
         >
           <form className="create modal-form" onSubmit={save}>
@@ -1058,7 +1270,13 @@ export function Workspace() {
                   field === 'allocated' ? 'Presupuesto techo asignado (Límite financiero)' :
                   field === 'spent' ? 'Gasto ejecutado acumulado a la fecha' :
                   field === 'currency' ? 'Moneda del presupuesto' : fieldLabel(field)
-                ) : fieldLabel(field);
+                ) : active.key === 'priority' ? (
+                  field === 'projectId' ? 'Proyecto a priorizar' :
+                  field === 'impact' ? 'Impacto (0–100 · peso 35%)' :
+                  field === 'urgency' ? 'Urgencia (0–100 · peso 25%)' :
+                  field === 'risk' ? 'Riesgo (0–100 · penaliza 15%)' :
+                  field === 'alignment' ? 'Alineación (0–100 · peso 25%)' : fieldLabel(field)
+                ) : active.key === 'resource' && field === 'capacity' ? 'Capacidad disponible (25%–100%)' : fieldLabel(field);
 
                 return (
                 <label key={field}>
@@ -1146,10 +1364,34 @@ export function Workspace() {
                         { value: 'BLOCKED', label: 'Bloqueado' },
                       ]}
                     />
+                  ) : active.key === 'priority' && ['impact', 'urgency', 'risk', 'alignment'].includes(field) ? (
+                    <div className={`priority-metric-control${field === 'risk' ? ' is-risk' : ''}`}>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        aria-label={`${customLabel} control deslizante`}
+                        value={clampPriorityValue(form[field])}
+                        onChange={e => setForm({ ...form, [field]: e.target.value })}
+                      />
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        inputMode="numeric"
+                        value={form[field] ?? ''}
+                        onChange={e => setForm({ ...form, [field]: e.target.value })}
+                        placeholder="0–100"
+                      />
+                      <span className="priority-metric-unit">/100</span>
+                    </div>
                   ) : (
                     <input
                       required={active.required.includes(field)}
                       type={['allocated', 'spent', 'capacity', 'impact', 'urgency', 'risk', 'alignment'].includes(field) ? 'number' : field === 'email' ? 'email' : field.endsWith('Date') ? 'date' : 'text'}
+                      min={field === 'allocated' || field === 'spent' ? 0 : undefined}
                       step={['allocated', 'spent', 'capacity', 'impact', 'urgency', 'risk', 'alignment'].includes(field) ? 'any' : undefined}
                       value={form[field] || ''}
                       onChange={e => setForm({ ...form, [field]: e.target.value })}
@@ -1218,6 +1460,25 @@ export function Workspace() {
                 )}
               </div>
             )}
+
+            {active.key === 'priority' && (() => {
+              const previewScore = computePriorityScore(form);
+              const scoreTone = priorityScoreTone(previewScore);
+              return (
+                <div className="priority-live-summary">
+                  <div className="priority-summary-header">
+                    <span>Puntaje proyectado</span>
+                    <span className={`priority-score-pill tone-${scoreTone}`}>{previewScore} / 100</span>
+                  </div>
+                  <div className="inline-meter-track">
+                    <span className={`inline-meter-fill fill-${scoreTone}`} style={{ width: `${previewScore}%` }} />
+                  </div>
+                  <p className="priority-formula-note">
+                    Fórmula: 35% Impacto + 25% Urgencia + 25% Alineación + 15% (100 − Riesgo). Valores válidos de 0 a 100.
+                  </p>
+                </div>
+              );
+            })()}
 
             <div className="modal-form-actions">
               <button type="button" className="secondary" onClick={() => { setFormOpen(false); setEditing(null); }}>Cancelar</button>

@@ -94,7 +94,7 @@ resources:
         Protocol: sqs
         TopicArn: !Ref DomainTopic
         Endpoint: !GetAtt NotificationQueue.Arn
-        FilterPolicy: {eventType: [ReminderDue, AutomationReport, RiskAlert, WeeklySummary]}
+        FilterPolicy: {eventType: [ReminderDue, AutomationReport, RiskAlert, WeeklySummary, ProjectCreated, ProjectUpdated, ProjectCompleted, BudgetThresholdExceeded, ResourceAssigned, PriorityRecalculated]}
 
     # ---- E-mail delivery (Amazon SES is unavailable in AWS Academy): the consumer publishes here and each
     # user owns one e-mail subscription whose filter policy is {tenantId, userId}, created by the API.

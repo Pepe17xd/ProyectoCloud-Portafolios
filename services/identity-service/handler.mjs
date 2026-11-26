@@ -57,7 +57,7 @@ const flowEngine = createFlowEngine({
         if (profile.Item?.status !== 'ACTIVE') continue;
         const personalized = buildRecipientFlowReport({ role: membership.role, userId: membership.userId, source, alerts, workflowId, executionId: idempotencyKey });
         const stableId = createHash('sha256').update(`${tenantId}:${workflowId}:${idempotencyKey}:${membership.userId}`).digest('hex');
-        if (await emailRuntime.enqueue({ tenantId, userId: membership.userId, eventType: personalized.eventType, idempotencyKey: `flow-${stableId}`, title: personalized.report.title, parameters: personalized.parameters })) queued += 1;
+        if (await emailRuntime.enqueue({ tenantId, userId: membership.userId, eventType: FLOW_EVENT_MAP[personalized.eventType] || personalized.eventType, idempotencyKey: `flow-${stableId}`, title: personalized.report.title, parameters: personalized.parameters })) queued += 1;
       }
       lastKey = page.LastEvaluatedKey;
     } while (lastKey);
@@ -85,28 +85,109 @@ async function flowsApi(event, actor, method, path) {
   if(method==='PATCH'&&!action){authorize(role,method,'identityAdmin');const body=parse(event);const allowed=['name','frequency','time','dayOfWeek','timezone','enabled','budgetThreshold'];if(Object.keys(body).some(field=>!allowed.includes(field)))return reply(400,{error:'Field cannot be changed on an automation.'});if(typeof body.enabled!=='boolean')return reply(400,{error:'enabled is required'});if(body.name!==undefined&&(typeof body.name!=='string'||!body.name.trim()||body.name.length>100))return reply(400,{error:'Invalid automation name'});if(body.budgetThreshold!==undefined&&(!Number.isFinite(body.budgetThreshold)||body.budgetThreshold<0.5||body.budgetThreshold>1.5))return reply(400,{error:'Invalid budget threshold'});const schedule={...got.Item,...body};if(body.time||body.frequency||body.dayOfWeek!==undefined||body.timezone){schedule.nextRunAt=nextFlowRun(schedule);schedule.lastRunAt=got.Item.lastRunAt;}const item={...schedule,enabled:body.enabled,updatedAt:new Date().toISOString(),updatedBy:userId};if(item.enabled&&item.nextRunAt){item.gsi2pk='FLOW#ENABLED';item.gsi2sk=item.nextRunAt;}else{delete item.gsi2pk;delete item.gsi2sk;}await db.send(new PutCommand({TableName:table,Item:item,ConditionExpression:'attribute_exists(pk) AND attribute_exists(sk)'}));return reply(200,item);}
   return reply(404,{error:'Not found'});
 }
-async function notificationsApi(event, actor, method, path) {
+const defaultNotificationPrefs = { enabled: false, anytime: false, timezone: 'America/Lima', allowedHours: { start: '08:00', end: '18:00' }, frequency: 'immediate', alertTypes: [], emailConsent: false };
+
+export function normalizeNotificationPreferences(stored = {}) {
+  return {
+    ...defaultNotificationPrefs,
+    ...stored,
+    enabled: Boolean(stored.enabled),
+    anytime: Boolean(stored.anytime),
+    timezone: typeof stored.timezone === 'string' && stored.timezone ? stored.timezone : defaultNotificationPrefs.timezone,
+    allowedHours: stored.allowedHours?.start && stored.allowedHours?.end ? stored.allowedHours : defaultNotificationPrefs.allowedHours,
+    frequency: ['immediate', 'daily', 'weekly'].includes(stored.frequency) ? stored.frequency : defaultNotificationPrefs.frequency,
+    alertTypes: Array.isArray(stored.alertTypes) ? stored.alertTypes : [],
+  };
+}
+
+export function formatDomainInboxTitle(domainEvent = {}) {
+  const name = String(domainEvent.payload?.name || '').trim();
+  switch (domainEvent.eventType) {
+    case 'ProjectCreated': return name ? `Proyecto creado: ${name}` : 'Nuevo proyecto creado';
+    case 'ProjectUpdated': return name ? `Proyecto actualizado: ${name}` : 'Proyecto actualizado';
+    case 'ProjectCompleted': return name ? `Proyecto completado: ${name}` : 'Proyecto completado';
+    case 'BudgetThresholdExceeded': return 'Presupuesto superó el umbral de alerta';
+    case 'ResourceAssigned': return 'Nuevo recurso asignado a proyecto';
+    case 'PriorityRecalculated': return 'Prioridad de proyecto recalculada';
+    default: return String(domainEvent.eventType || 'Notificación de dominio');
+  }
+}
+
+export async function deliverDomainEventToInbox(domainEvent, deps = { db, table }) {
+  const eventType = domainEvent?.eventType;
+  const tenantId = domainEvent?.tenantId;
+  const eventId = domainEvent?.eventId;
+  if (!tenantId || !eventId || !notificationTypes.has(eventType)) return { delivered: 0 };
+  const pk = `TENANT#${tenantId}`;
+  const title = formatDomainInboxTitle(domainEvent);
+  const createdAt = domainEvent.occurredAt || new Date().toISOString();
+  let lastKey;
+  let delivered = 0;
+  do {
+    const page = await deps.db.send(new QueryCommand({
+      TableName: deps.table,
+      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+      ExpressionAttributeValues: { ':pk': pk, ':prefix': 'NOTIFY#PREFERENCES#' },
+      ExclusiveStartKey: lastKey,
+    }));
+    for (const pref of page.Items || []) {
+      if (pref.enabled !== true || !Array.isArray(pref.alertTypes) || !pref.alertTypes.includes(eventType)) continue;
+      const targetUserId = String(pref.sk || '').slice('NOTIFY#PREFERENCES#'.length);
+      if (!targetUserId) continue;
+      const stableId = `domain-${eventId}`;
+      try {
+        await deps.db.send(new PutCommand({
+          TableName: deps.table,
+          Item: {
+            pk,
+            sk: `NOTIFY#DELIVERY#${targetUserId}#${stableId}`,
+            eventId: stableId,
+            eventType,
+            tenantId,
+            userId: targetUserId,
+            entityId: domainEvent.entityId || null,
+            title,
+            deliveryStatus: 'DELIVERED_INBOX',
+            provider: 'sns-domain',
+            createdAt,
+          },
+          ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+        }));
+        delivered += 1;
+      } catch (err) {
+        if (err.name !== 'ConditionalCheckFailedException') throw err;
+      }
+    }
+    lastKey = page.LastEvaluatedKey;
+  } while (lastKey);
+  return { delivered };
+}
+
+export async function notificationsApi(event, actor, method, path, deps = { db, table, emailRuntime }) {
   const { tenantId, userId } = actor;
   const prefKey = { pk: `TENANT#${tenantId}`, sk: `NOTIFY#PREFERENCES#${userId}` };
-  const mode = process.env.NOTIFICATION_MODE || 'disabled';
   if (path === '/notifications/preferences' && method === 'GET') {
-    const value = await db.send(new GetCommand({ TableName: table, Key: prefKey }));
-    return reply(200, value.Item || { enabled: false, timezone: 'America/Lima', allowedHours: { start: '08:00', end: '18:00' }, frequency: 'immediate', alertTypes: [], emailConsent: false });
+    const value = await deps.db.send(new GetCommand({ TableName: deps.table, Key: prefKey }));
+    return reply(200, normalizeNotificationPreferences(value.Item || {}));
   }
   if (path === '/notifications/preferences' && method === 'PUT') {
     const body = parse(event);
-    if (typeof body.enabled !== 'boolean' || typeof body.timezone !== 'string' || !['immediate','daily','weekly'].includes(body.frequency) || !Array.isArray(body.alertTypes) || body.alertTypes.some((type) => !notificationTypes.has(type)) || !body.allowedHours) return reply(400, { error: 'Invalid notification preferences' });
+    const prior = await deps.db.send(new GetCommand({ TableName: deps.table, Key: prefKey }));
+    const frequency = body.frequency || prior.Item?.frequency || 'immediate';
+    const anytime = typeof body.anytime === 'boolean' ? body.anytime : Boolean(prior.Item?.anytime);
+    const allowedHours = body.allowedHours || (anytime ? { start: '00:00', end: '23:59' } : prior.Item?.allowedHours);
+    if (typeof body.enabled !== 'boolean' || typeof body.timezone !== 'string' || !['immediate','daily','weekly'].includes(frequency) || !Array.isArray(body.alertTypes) || body.alertTypes.some((type) => !notificationTypes.has(type)) || !allowedHours) return reply(400, { error: 'Invalid notification preferences' });
     try { new Intl.DateTimeFormat('en', { timeZone: body.timezone }); } catch { return reply(400, { error: 'Invalid timezone' }); }
-    const prior = await db.send(new GetCommand({ TableName: table, Key: prefKey }));
-    const item = { ...prefKey, ...(prior.Item || {}), enabled: body.enabled, timezone: body.timezone, allowedHours: body.allowedHours, frequency: body.frequency, alertTypes: [...new Set(body.alertTypes)], updatedAt: new Date().toISOString() };
-    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(body.allowedHours.start) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(body.allowedHours.end)) return reply(400, { error: 'Invalid allowedHours' });
-    await db.send(new PutCommand({ TableName: table, Item: item }));
+    const item = { ...prefKey, ...(prior.Item || {}), enabled: body.enabled, anytime, timezone: body.timezone, allowedHours, frequency, alertTypes: [...new Set(body.alertTypes)], updatedAt: new Date().toISOString() };
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(allowedHours.start) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(allowedHours.end)) return reply(400, { error: 'Invalid allowedHours' });
+    await deps.db.send(new PutCommand({ TableName: deps.table, Item: item }));
     return reply(200, item);
   }
-  if (path.startsWith('/notifications/email')) return emailRuntime.handle(event, actor, method, path);
+  if (path.startsWith('/notifications/email')) return deps.emailRuntime.handle(event, actor, method, path);
   if (path === '/notifications/inbox' && method === 'GET') {
-    const data = await db.send(new QueryCommand({ TableName: table, KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)', ExpressionAttributeValues: { ':pk': prefKey.pk, ':prefix': `NOTIFY#DELIVERY#${userId}#` }, Limit: 50 }));
-    return reply(200, { items: data.Items || [] });
+    const data = await deps.db.send(new QueryCommand({ TableName: deps.table, KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)', ExpressionAttributeValues: { ':pk': prefKey.pk, ':prefix': `NOTIFY#DELIVERY#${userId}#` }, Limit: 50 }));
+    const items = (data.Items || []).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    return reply(200, { items });
   }
   return reply(404, { error: 'Not found' });
 }
@@ -253,8 +334,14 @@ export async function notificationConsumer(event) {
   const batchItemFailures = [];
   for (const record of event.Records || []) {
     try {
-      const outcome = await emailRuntime.processJob(parseQueueBody(record.body));
-      console.info(JSON.stringify({ action: 'notification.processed', status: outcome?.status, messageId: record.messageId }));
+      const payload = parseQueueBody(record.body);
+      if (notificationTypes.has(payload?.eventType)) {
+        const outcome = await deliverDomainEventToInbox(payload);
+        console.info(JSON.stringify({ action: 'domain.inbox.delivered', eventType: payload.eventType, delivered: outcome.delivered, messageId: record.messageId }));
+      } else {
+        const outcome = await emailRuntime.processJob(payload);
+        console.info(JSON.stringify({ action: 'notification.processed', status: outcome?.status, messageId: record.messageId }));
+      }
     } catch (error) {
       const retry = shouldRetryEmailRecord(error);
       if (retry) batchItemFailures.push({ itemIdentifier: record.messageId });
